@@ -1,0 +1,202 @@
+// THE FROZEN SCHEMA — jointly governed by Team 1 (base schema owner) and the
+// Architect. No model is added here except via a reviewed Prisma migration.
+// See README.md "Changing the schema" before editing this file.
+//
+// Every model here must match an entity in shared/entities.js exactly. If a
+// story needs a field that isn't in shared/, stop and raise it for Architect
+// review — do not add it here unilaterally (see AGENTS.md hard rules).
+//
+// All instant-in-time fields use @db.Timestamptz, not Prisma's default
+// timestamp(3). This matters beyond style: the overlap-prevention exclusion
+// constraint below builds a tstzrange() over Booking.startAt/endAt, and a
+// GiST index expression must be IMMUTABLE — the implicit timestamp ->
+// timestamptz cast is timezone-dependent (STABLE), so it is rejected unless
+// the columns are already timestamptz.
+//
+// The overlap-prevention exclusion constraint and the audit_log immutability
+// grant cannot be expressed in this DSL — they live in a raw-SQL migration
+// (prisma/migrations/*_add_concurrency_guarantee/migration.sql).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  BOOKER
+  APPROVER
+  ADMIN
+}
+
+enum BookingStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  MODIFIED
+  COMPLETED
+  CANCELLED
+}
+
+enum ApprovalDecision {
+  APPROVE
+  REJECT
+  DELEGATE
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  role         Role
+  approverTier Int?
+  createdAt    DateTime @default(now()) @db.Timestamptz
+
+  bookings           Booking[]            @relation("BookerBookings")
+  approvals          Approval[]
+  delegationsFrom    Delegation[]         @relation("DelegatorDelegations")
+  delegationsTo      Delegation[]         @relation("DelegateDelegations")
+  auditLogEntries    AuditLog[]
+  notifications      NotificationOutbox[]
+  venueBlocksCreated VenueBlock[]
+
+  @@map("users")
+}
+
+model Venue {
+  id              String   @id @default(uuid())
+  name            String
+  type            String
+  location        String
+  capacity        Int
+  attributes      String[]
+  approvalChainId String
+  createdAt       DateTime @default(now()) @db.Timestamptz
+
+  approvalChain ApprovalChain @relation(fields: [approvalChainId], references: [id])
+  bookings      Booking[]
+  venueBlocks   VenueBlock[]
+
+  @@map("venues")
+}
+
+model VenueBlock {
+  id        String   @id @default(uuid())
+  venueId   String
+  startAt   DateTime @db.Timestamptz
+  endAt     DateTime @db.Timestamptz
+  recurring Boolean  @default(false)
+  reason    String
+  createdBy String
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  venue         Venue @relation(fields: [venueId], references: [id])
+  createdByUser User  @relation(fields: [createdBy], references: [id])
+
+  @@map("venue_blocks")
+}
+
+model ApprovalChain {
+  id        String   @id @default(uuid())
+  venueType String
+  version   Int      @default(1)
+  steps     Json
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  venues Venue[]
+
+  @@map("approval_chains")
+}
+
+model Booking {
+  id                    String        @id @default(uuid())
+  venueId               String
+  bookerId              String
+  purpose               String
+  startAt               DateTime      @db.Timestamptz
+  endAt                 DateTime      @db.Timestamptz
+  status                BookingStatus
+  approvalChainSnapshot Json
+  currentStepIndex      Int           @default(0)
+  createdAt             DateTime      @default(now()) @db.Timestamptz
+  updatedAt             DateTime      @updatedAt @db.Timestamptz
+
+  venue         Venue                @relation(fields: [venueId], references: [id])
+  booker        User                 @relation("BookerBookings", fields: [bookerId], references: [id])
+  approvals     Approval[]
+  notifications NotificationOutbox[]
+
+  @@map("bookings")
+}
+
+model Approval {
+  id         String           @id @default(uuid())
+  bookingId  String
+  stepIndex  Int
+  approverId String
+  decision   ApprovalDecision
+  comment    String?
+  decidedAt  DateTime         @default(now()) @db.Timestamptz
+
+  booking  Booking @relation(fields: [bookingId], references: [id])
+  approver User    @relation(fields: [approverId], references: [id])
+
+  @@map("approvals")
+}
+
+model Delegation {
+  id          String   @id @default(uuid())
+  delegatorId String
+  delegateId  String
+  startAt     DateTime @db.Timestamptz
+  endAt       DateTime @db.Timestamptz
+  createdAt   DateTime @default(now()) @db.Timestamptz
+
+  delegator User @relation("DelegatorDelegations", fields: [delegatorId], references: [id])
+  delegate  User @relation("DelegateDelegations", fields: [delegateId], references: [id])
+
+  @@map("delegations")
+}
+
+// Append-only. UPDATE/DELETE are revoked at the database level for the
+// runtime app role in the raw-SQL migration — see AGENTS.md rule 3.
+model AuditLog {
+  id         String   @id @default(uuid())
+  entityType String
+  entityId   String
+  action     String
+  actorId    String?
+  metadata   Json
+  createdAt  DateTime @default(now()) @db.Timestamptz
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@map("audit_log")
+}
+
+model NotificationOutbox {
+  id          String             @id @default(uuid())
+  bookingId   String?
+  recipientId String
+  templateKey String
+  payload     Json
+  status      NotificationStatus @default(PENDING)
+  attempts    Int                @default(0)
+  createdAt   DateTime           @default(now()) @db.Timestamptz
+  sentAt      DateTime?          @db.Timestamptz
+
+  booking   Booking? @relation(fields: [bookingId], references: [id])
+  recipient User     @relation(fields: [recipientId], references: [id])
+
+  @@map("notification_outbox")
+}

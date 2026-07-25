@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# env — never commit real values, only .env.example
+.env
+.env.local
+.env.*.local
+
+# build output
+client/dist/
+server/public/
+
+# prisma / db
+server/prisma/*.db
+server/prisma/*.db-journal
+
+# logs
+npm-debug.log*
+*.log
+
+# OS
+.DS_Store
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea/

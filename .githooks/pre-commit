@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Pre-commit guardrails (AGENTS.md hard rules). Fast, local checks only —
+# the full suite runs in CI. Installed via `git config core.hooksPath
+# .githooks`, which the root `postinstall` script sets automatically.
+set -euo pipefail
+
+staged_files=$(git diff --cached --name-only --diff-filter=ACM)
+fail=0
+
+# --- Rule: never commit a real .env file --------------------------------
+env_files=$(echo "$staged_files" | grep -E '(^|/)\.env$' || true)
+if [ -n "$env_files" ]; then
+  echo "BLOCKED: a real .env file is staged. Only .env.example may be committed."
+  echo "$env_files"
+  fail=1
+fi
+
+# --- Rule: never commit secrets/credentials ------------------------------
+# Plain POSIX ERE (portable across BSD grep on macOS and GNU grep on Linux —
+# no PCRE-only syntax like inline (?i) or lookaheads).
+secret_pattern='-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|(api[_-]?key|secret|password|token)[[:space:]]*[:=][[:space:]]*['\''"][^'\''"]{8,}['\''"]'
+for f in $staged_files; do
+  # .env.example intentionally contains placeholder-shaped lines; skip it.
+  [[ "$f" == *".env.example" ]] && continue
+  [ -f "$f" ] || continue
+  # -e marks the pattern explicitly: it starts with "-----" (private key
+  # header), which grep would otherwise parse as flags and fail on.
+  # A line ending in "pragma: allowlist-secret" is a deliberate, documented
+  # placeholder (e.g. the dev-only role password in the concurrency-guarantee
+  # migration) -- not a real credential. Narrow, explicit opt-out per line,
+  # not a weakened pattern.
+  matches=$(git show ":$f" | grep -Ein -e "$secret_pattern" | grep -v 'pragma: allowlist-secret' || true)
+  if [ -n "$matches" ]; then
+    echo "BLOCKED: possible secret/credential in staged file: $f"
+    echo "$matches" | sed 's/^/  /'
+    fail=1
+  fi
+done
+
+# --- Rule: schema.prisma changes require an accompanying migration -------
+if echo "$staged_files" | grep -qx "server/prisma/schema.prisma"; then
+  migration_files=$(echo "$staged_files" | grep -E '^server/prisma/migrations/.+' || true)
+  if [ -z "$migration_files" ]; then
+    echo "BLOCKED: server/prisma/schema.prisma is staged with no matching migration file."
+    echo "Schema changes ship only as reviewed Prisma migrations — see README.md \"Changing the schema\"."
+    fail=1
+  fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "Commit rejected by .githooks/pre-commit — see AGENTS.md hard rules."
+  exit 1
+fi
+
+exit 0

@@ -1,0 +1,8 @@
+{
+  "name": "shared",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "index.js",
+  "description": "THE FROZEN CONTRACT — enums, entity/DTO shapes, API request/response contracts, and the booking state-machine definition, imported by both client and server. Architect-owned; see README.md \"Team ownership map\"."
+}

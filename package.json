@@ -1,0 +1,30 @@
+{
+  "name": "venue-booking",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Campus venue-booking system — npm workspaces monorepo (client, server, shared).",
+  "workspaces": [
+    "client",
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently -n client,server -c blue,green \"npm run dev:client\" \"npm run dev:server\"",
+    "dev:client": "npm run dev --workspace=client",
+    "dev:server": "npm run dev --workspace=server",
+    "install:all": "npm install",
+    "postinstall": "git config core.hooksPath .githooks || true",
+    "build": "npm run build --workspace=client && node scripts/copy-client-build.mjs",
+    "start": "npm run start --workspace=server",
+    "lint": "npm run lint --workspace=client && npm run lint --workspace=server",
+    "test": "npm run test --workspace=client && npm run test --workspace=server",
+    "ci:check-mailer-imports": "bash .github/scripts/check-mailer-imports.sh",
+    "ci:check-audit-log-mutations": "bash .github/scripts/check-audit-log-mutations.sh"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
