@@ -269,10 +269,12 @@ Each workspace (`client/`, `server/`) has its own `.env`, gitignored, with a com
 
 ## Getting started
 
+> **New to the project? Start with [docs/SETUP.md](docs/SETUP.md) instead of this section** — it's the step-by-step, Mac-and-Windows walkthrough (installing PostgreSQL, the two-role database setup, troubleshooting). This section is the quick-reference summary for people who already have their machine set up once.
+
 ### Prerequisites
 
-- Node.js (LTS — check `package.json` engines field once set; recommend the current Node LTS)
-- PostgreSQL (for anything beyond quick local iteration; SQLite works for solo local dev)
+- Node.js 20 LTS or newer
+- PostgreSQL 16+, running locally (required, not optional — the double-booking guarantee is a PostgreSQL-specific feature; SQLite cannot express it)
 
 ### Setup
 
@@ -282,18 +284,19 @@ git clone <REPO_URL>
 cd venue-booking
 
 # 2. Install all workspaces (client, server, shared) from the root
+#    (also wires up the pre-commit hook automatically)
 npm run install:all
 
 # 3. Configure environment
 cp client/.env.example client/.env
 cp server/.env.example server/.env
-# now edit both .env files with real local values
+# edit server/.env: DATABASE_URL first as your Postgres superuser (to migrate),
+# then switch it to the app_user role the migration creates (to run the app)
+# — see docs/SETUP.md if this step is unclear.
 
-# 4. Set up the database
-cd server
-npx prisma migrate dev
-npx prisma db seed
-cd ..
+# 4. Set up the database (applies existing migrations — do not use `migrate dev` here)
+createdb venue_booking_dev
+cd server && npx prisma migrate deploy && cd ..
 
 # 5. Run everything
 npm run dev
