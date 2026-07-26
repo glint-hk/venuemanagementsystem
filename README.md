@@ -323,20 +323,36 @@ In dev, the Vite client and the Express server run on **different ports**. Vite'
 flowchart LR
     A[Write spec for the story] --> B[AI-assisted implementation<br/>against the spec]
     B --> C[Human review + tests]
-    C --> D[Feature branch → PR into main]
+    C --> D[Feature branch → PR into your team's branch]
     D --> E{Touches /shared<br/>or schema?}
-    E -->|yes| F[Cross-team reviewer required]
+    E -->|yes| F[Cross-team reviewer + Architect required]
     E -->|no| G[Same-team reviewer OK]
     F --> H[Lint + relevant test suite must pass]
     G --> H
-    H --> I[Merge]
+    H --> I[Merge into team branch]
+    I --> J[Team branch → PR into main, periodically]
+    J --> K[Architect review]
+    K --> L[Merge into main]
 ```
 
-1. **One feature branch per user story.**
+### Branches
+
+Each team works off its own long-lived branch, off `main`:
+
+| Team | Branch |
+|---|---|
+| Team 1 — Tarot Club (Epic A) | `team1-data-core-admin` |
+| Team 2 — Prodnova (Epic B) | `team2-identity-stakeholder` |
+| Team 3 — Sprint & Tonic (Epic C) | `team3-approval-notifications` |
+
+Story work happens on a feature branch cut from your team's branch, not from `main` directly. `main` only moves when a team branch is merged in via PR — it stays the integration point, not the place day-to-day work happens.
+
+1. **One feature branch per user story, cut from your team's branch.**
 2. **Spec before code.** Write (or reference) the spec/contract for the story before generating code against it. AI may write the first pass; a human reviews and tests it before it's considered done. This is the "more than vibe coding, less than agentic engineering" rule — AI fills in an agreed contract, it doesn't invent one.
-3. **PR into `main`.** Must pass lint and the relevant test suite.
+3. **PR into your team's branch.** Must pass lint and the relevant test suite.
 4. **Review.** Any team member can review same-team-owned changes. **Anything touching `/shared` or `prisma/schema.prisma` requires a cross-team reviewer** (not just someone from your own team) plus Architect sign-off — see below.
-5. **Merge.**
+5. **Merge into your team branch.**
+6. **Team branch → PR into `main`, periodically** (e.g. end of each phase/week) — always via PR, always with Architect review, never a direct push to `main`.
 
 ### Changing the schema
 

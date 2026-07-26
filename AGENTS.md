@@ -94,8 +94,12 @@ Completed is terminal.
 - Never add a dependency without stating why in the PR description.
 
 ## Workflow
-Feature branch per user story → PR to main → lint + tests must pass →
-review by another team member (cross-team reviewer if shared/ or schema touched) → merge.
+Each team works off its own long-lived branch (`team1-data-core-admin`,
+`team2-identity-stakeholder`, `team3-approval-notifications`), branched from
+main. Feature branch per user story → PR into your team's branch → lint +
+tests must pass → review by another team member → merge into the team branch.
+The team branch itself → PR into main periodically → cross-team reviewer +
+Architect review required if shared/ or schema was touched → merge into main.
 ```
 
 **Rule of thumb from the paper:** start with roughly ten lines, then *add a rule every time the agent does something it should not do again.* The file grows from observed failures, not from speculation.
