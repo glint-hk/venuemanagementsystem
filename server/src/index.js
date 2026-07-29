@@ -59,6 +59,22 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: "Internal Server Error" });
 });
 
+app.use((err, req, res, next) => {
+  console.error(err);
+
+  // Prisma unique constraint violation (e.g. duplicate email)
+  if (err.code === 'P2002') {
+    return res.status(409).json({ error: 'A record with this unique value already exists.' });
+  }
+
+  // PostgreSQL Exclusion Constraint Violation (Double-booking attempt)
+  if (err.code === 'P2010' || err.message?.includes('exclusion constraint')) {
+    return res.status(409).json({ error: 'Venue is already booked for the requested timeslot.' });
+  }
+
+  return res.status(500).json({ error: err.message || 'Internal Server Error' });
+});
+
 const port = process.env.PORT || 4000;
 const server = app.listen(port, () => {
   console.log(`server listening on :${port}`);
