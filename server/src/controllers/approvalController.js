@@ -1,0 +1,180 @@
+// Team 3 (Sprint & Tonic) owned — the approval-routing controller (US-C2),
+// per the ownership map in README.md. Adopted from Team 2's original draft
+// of this endpoint (it shipped ahead of us, on their branch, wired to
+// Prodnova's ApprovalsPage.jsx) and extended here with the notification_outbox
+// write their draft was missing.
+import prisma from "../lib/prisma.js";
+import { BookingStatus } from "shared";
+
+/**
+ * POST /api/bookings/:bookingId/approve — record an approval/rejection decision.
+ * Body: ApprovalDecisionRequest from shared/contracts.js
+ *
+ * US-C2 rules:
+ * - Only the approver at the lowest undecided step (or an ADMIN) may act
+ * - Rejection requires a comment
+ * - Approval on last step → APPROVED
+ * - Rejection at any step → REJECTED
+ * - Every decision writes exactly one notification_outbox row, in the same
+ *   transaction as the status change (US-C2/US-C4 — never call the mailer
+ *   directly from here)
+ */
+export async function approveBooking(req, res, next) {
+  try {
+    const { bookingId } = req.params;
+    const { decision, comment } = req.body;
+    const user = req.user;
+
+    if (!["APPROVE", "REJECT"].includes(decision)) {
+      return res.status(400).json({ error: "decision must be APPROVE or REJECT" });
+    }
+    if (decision === "REJECT" && !comment) {
+      return res.status(400).json({ error: "comment is required when rejecting" });
+    }
+
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { approvals: true },
+    });
+
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.status !== BookingStatus.PENDING) {
+      return res.status(400).json({ error: "Booking is not pending approval" });
+    }
+
+    const chain = booking.approvalChainSnapshot;
+    if (!Array.isArray(chain) || chain.length === 0) {
+      return res.status(400).json({ error: "No approval chain configured" });
+    }
+
+    const currentStep = chain[booking.currentStepIndex];
+    if (!currentStep) {
+      return res.status(400).json({ error: "Invalid current step" });
+    }
+
+    // Verify this approver is the right tier for the current step (or is ADMIN)
+    if (user.role !== "ADMIN" && user.approverTier !== currentStep.tier) {
+      return res.status(403).json({ error: "You are not the approver for the current step" });
+    }
+
+    // Check no duplicate decision for this step
+    const existingDecision = booking.approvals.find(
+      (a) => a.stepIndex === booking.currentStepIndex,
+    );
+    if (existingDecision) {
+      return res.status(409).json({ error: "This step has already been decided" });
+    }
+
+    const isLastStep = booking.currentStepIndex >= chain.length - 1;
+
+    const result = await prisma.$transaction(async (tx) => {
+      // Record the approval decision
+      await tx.approval.create({
+        data: {
+          bookingId,
+          stepIndex: booking.currentStepIndex,
+          approverId: user.id,
+          decision,
+          comment: comment || null,
+        },
+      });
+
+      let newStatus = booking.status;
+      let newStepIndex = booking.currentStepIndex;
+
+      if (decision === "REJECT") {
+        newStatus = BookingStatus.REJECTED;
+      } else if (decision === "APPROVE" && isLastStep) {
+        newStatus = BookingStatus.APPROVED;
+      } else {
+        // Move to next step
+        newStepIndex = booking.currentStepIndex + 1;
+      }
+
+      const updated = await tx.booking.update({
+        where: { id: bookingId },
+        data: { status: newStatus, currentStepIndex: newStepIndex },
+        include: {
+          venue: { select: { id: true, name: true, location: true } },
+          booker: { select: { id: true, name: true } },
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          entityType: "booking",
+          entityId: bookingId,
+          action: decision === "APPROVE" ? "BOOKING_STEP_APPROVED" : "BOOKING_REJECTED",
+          actorId: user.id,
+          metadata: {
+            stepIndex: booking.currentStepIndex,
+            decision,
+            comment,
+            resultingStatus: newStatus,
+          },
+        },
+      });
+
+      // Every decision notifies exactly one recipient, in this same
+      // transaction. Templates render from `payload` only (US-C4) — no
+      // hard-coded name/URL belongs in the template itself.
+      const notifyPayload = {
+        bookingId,
+        venueName: updated.venue.name,
+        purpose: updated.purpose,
+        timeslot: { startAt: updated.startAt, endAt: updated.endAt },
+      };
+
+      if (decision === "REJECT") {
+        await tx.notificationOutbox.create({
+          data: {
+            bookingId,
+            recipientId: updated.booker.id,
+            templateKey: "BOOKING_REJECTED",
+            payload: { ...notifyPayload, comment },
+          },
+        });
+      } else if (isLastStep) {
+        await tx.notificationOutbox.create({
+          data: {
+            bookingId,
+            recipientId: updated.booker.id,
+            templateKey: "BOOKING_APPROVED",
+            payload: notifyPayload,
+          },
+        });
+      } else {
+        const nextStep = chain[newStepIndex];
+        const nextApprover = await tx.user.findFirst({
+          where: { role: "APPROVER", approverTier: nextStep.tier },
+        });
+        // No approver seeded for this tier — the decision still stands;
+        // there is simply no one to notify until one is assigned.
+        if (nextApprover) {
+          await tx.notificationOutbox.create({
+            data: {
+              bookingId,
+              recipientId: nextApprover.id,
+              templateKey: "APPROVAL_REQUESTED",
+              payload: { ...notifyPayload, stepTier: nextStep.tier },
+            },
+          });
+        }
+      }
+
+      return updated;
+    });
+
+    return res.json({
+      id: result.id,
+      venue: result.venue,
+      booker: result.booker,
+      purpose: result.purpose,
+      timeslot: { startAt: result.startAt, endAt: result.endAt },
+      status: result.status,
+      currentStepIndex: result.currentStepIndex,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
