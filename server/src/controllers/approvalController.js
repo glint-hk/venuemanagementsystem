@@ -7,6 +7,52 @@ import prisma from "../lib/prisma.js";
 import { BookingStatus } from "shared";
 
 /**
+ * GET /api/bookings/pending-approvals — bookings where the signed-in user is
+ * the CURRENT step's approver. Filtered server-side (US-B4) -- the client
+ * never fetches everything and filters in the browser.
+ *
+ * ADMIN sees every pending booking, regardless of tier. An APPROVER sees only
+ * bookings whose current step tier matches their own approverTier.
+ */
+export async function pendingApprovals(req, res, next) {
+  try {
+    const { user } = req;
+    if (user.role !== "ADMIN" && user.role !== "APPROVER") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const pending = await prisma.booking.findMany({
+      where: { status: BookingStatus.PENDING },
+      include: {
+        venue: { select: { id: true, name: true, location: true } },
+        booker: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const mine = pending.filter((booking) => {
+      const step = booking.approvalChainSnapshot?.[booking.currentStepIndex];
+      if (!step) return false;
+      return user.role === "ADMIN" || step.tier === user.approverTier;
+    });
+
+    return res.json(
+      mine.map((b) => ({
+        id: b.id,
+        venue: b.venue,
+        booker: b.booker,
+        purpose: b.purpose,
+        timeslot: { startAt: b.startAt, endAt: b.endAt },
+        status: b.status,
+        currentStepIndex: b.currentStepIndex,
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * POST /api/bookings/:bookingId/approve — record an approval/rejection decision.
  * Body: ApprovalDecisionRequest from shared/contracts.js
  *
@@ -175,6 +221,13 @@ export async function approveBooking(req, res, next) {
       currentStepIndex: result.currentStepIndex,
     });
   } catch (err) {
+    // The pre-check above is a courtesy for the common case; this is the
+    // real guarantee -- two concurrent decisions on the same step race past
+    // the pre-check, but only one can win the unique constraint on
+    // (bookingId, stepIndex). The loser gets a clean 409, not a raw 500.
+    if (err?.code === "P2002") {
+      return res.status(409).json({ error: "This step has already been decided" });
+    }
     next(err);
   }
 }

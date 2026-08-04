@@ -5,7 +5,7 @@
 // alerted that a request needed action. Everything else below is Team 1's
 // file, unchanged, so the Architect can diff this against their branch and
 // decide which version to merge.
-import prisma from '../prisma.js';
+import prisma from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
 
 /**
@@ -214,8 +214,12 @@ export const getBookingById = async (req, res, next) => {
     const isBooker = booking.bookerId === userId;
     const isAdmin = userRole === 'ADMIN';
 
+    // Scoped to the CURRENT step's tier specifically -- not "any approver".
+    // A tier-2 approver has no business seeing a booking still sitting at
+    // tier 1 (matches the same scoping rule pendingApprovals enforces).
     const currentStep = booking.approvalChainSnapshot?.[booking.currentStepIndex];
-    const isCurrentApprover = currentStep && (currentStep.approverId === userId || currentStep.role === userRole);
+    const isCurrentApprover =
+      currentStep && userRole === 'APPROVER' && currentStep.tier === req.user.approverTier;
 
     if (!isBooker && !isAdmin && !isCurrentApprover) {
       return res.status(403).json({ error: 'Forbidden: You do not have permission to view this booking' });
@@ -267,18 +271,21 @@ export const updateBooking = async (req, res, next) => {
         updatedEnd.getTime() !== existing.endAt.getTime() ||
         updatedVenueId !== existing.venueId;
 
-      let nextStatus = existing.status;
       let freshSnapshot = existing.approvalChainSnapshot;
       let resetStepIndex = false;
 
       if (isSlotChanged) {
         if (['PENDING', 'APPROVED', 'MODIFIED'].includes(existing.status)) {
-          nextStatus = 'PENDING';
           freshSnapshot = existing.venue.approvalChain?.steps || [];
           resetStepIndex = true;
         }
       }
 
+      // The frozen state machine (shared/stateMachine.js) has no direct
+      // APPROVED->PENDING or PENDING->PENDING edge -- only PENDING->MODIFIED,
+      // APPROVED->MODIFIED, and MODIFIED->PENDING. Write MODIFIED first (this
+      // call also carries the optimistic-concurrency check), then advance to
+      // PENDING as its own step below, both inside the same transaction.
       const updatedCount = await tx.booking.updateMany({
         where: {
           id,
@@ -289,7 +296,7 @@ export const updateBooking = async (req, res, next) => {
           purpose: purpose || existing.purpose,
           startAt: updatedStart,
           endAt: updatedEnd,
-          status: nextStatus,
+          status: isSlotChanged ? 'MODIFIED' : existing.status,
           currentStepIndex: resetStepIndex ? 0 : existing.currentStepIndex,
           approvalChainSnapshot: freshSnapshot,
         },
@@ -300,6 +307,11 @@ export const updateBooking = async (req, res, next) => {
       }
 
       if (isSlotChanged) {
+        // MODIFIED -> PENDING: re-enters approval with the freshly
+        // snapshotted chain written above. A distinct write, not folded into
+        // the one above, so the transition graph is honored explicitly.
+        await tx.booking.update({ where: { id }, data: { status: 'PENDING' } });
+
         await tx.notificationOutbox.create({
           data: {
             bookingId: id,
@@ -318,7 +330,7 @@ export const updateBooking = async (req, res, next) => {
           actorId,
           metadata: {
             previousStatus: existing.status,
-            newStatus: nextStatus,
+            newStatus: isSlotChanged ? 'PENDING' : existing.status,
             slotChanged: isSlotChanged,
           },
         },

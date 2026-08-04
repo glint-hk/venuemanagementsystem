@@ -3,7 +3,7 @@
 // going through supertest/express — supertest is imported by Team 1's
 // booking-lifecycle.test.js but isn't declared in any package.json on any
 // branch, so it can't be relied on here.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import prisma from "../src/lib/prisma.js";
 import { approveBooking } from "../src/controllers/approvalController.js";
 
@@ -110,14 +110,20 @@ describe("approval routing (US-C2)", () => {
 
   // Each test gets its own fresh booking, created directly (bypassing
   // createBooking) since this suite tests decision-time behavior only.
-  async function seedBooking(chainSnapshot) {
+  // A distinct hourOffset per call gives each test its own timeslot -- these
+  // tests don't clean up their booking between cases (only afterAll does),
+  // so reusing one hardcoded timeslot would trip the exclusion constraint
+  // against the PREVIOUS test's still-PENDING/APPROVED booking.
+  async function seedBooking(chainSnapshot, hourOffset) {
+    const startAt = new Date(Date.UTC(2027, 0, 1, hourOffset, 0, 0));
+    const endAt = new Date(Date.UTC(2027, 0, 1, hourOffset + 1, 0, 0));
     return prisma.booking.create({
       data: {
         venueId: venue.id,
         bookerId: booker.id,
         purpose: "Approval routing test",
-        startAt: new Date("2027-01-01T10:00:00Z"),
-        endAt: new Date("2027-01-01T12:00:00Z"),
+        startAt,
+        endAt,
         status: "PENDING",
         approvalChainSnapshot: chainSnapshot,
         currentStepIndex: 0,
@@ -126,7 +132,7 @@ describe("approval routing (US-C2)", () => {
   }
 
   it("refuses a decision from anyone but the lowest undecided step's approver", async () => {
-    const booking = await seedBooking(TWO_TIER_CHAIN);
+    const booking = await seedBooking(TWO_TIER_CHAIN, 1);
 
     // Tier-2 approver tries to act while the current step is tier 1.
     const res = await callApprove({ user: approverTier2, bookingId: booking.id, decision: "APPROVE" });
@@ -142,7 +148,7 @@ describe("approval routing (US-C2)", () => {
   });
 
   it("approves on the last step and marks the booking APPROVED", async () => {
-    const booking = await seedBooking(ONE_TIER_CHAIN);
+    const booking = await seedBooking(ONE_TIER_CHAIN, 2);
 
     const res = await callApprove({ user: approverTier1, bookingId: booking.id, decision: "APPROVE" });
     expect(res.statusCode).toBe(200);
@@ -159,7 +165,7 @@ describe("approval routing (US-C2)", () => {
   });
 
   it("approves on a non-last step, advances currentStepIndex, and notifies the next approver", async () => {
-    const booking = await seedBooking(TWO_TIER_CHAIN);
+    const booking = await seedBooking(TWO_TIER_CHAIN, 3);
 
     const res = await callApprove({ user: approverTier1, bookingId: booking.id, decision: "APPROVE" });
     expect(res.statusCode).toBe(200);
@@ -174,7 +180,7 @@ describe("approval routing (US-C2)", () => {
   });
 
   it("rejects at any step, requires a comment, and marks the booking REJECTED", async () => {
-    const booking = await seedBooking(TWO_TIER_CHAIN);
+    const booking = await seedBooking(TWO_TIER_CHAIN, 4);
 
     const missingComment = await callApprove({ user: approverTier1, bookingId: booking.id, decision: "REJECT" });
     expect(missingComment.statusCode).toBe(400);
@@ -196,13 +202,23 @@ describe("approval routing (US-C2)", () => {
   });
 
   it("refuses a second decision on an already-decided step", async () => {
-    const booking = await seedBooking(TWO_TIER_CHAIN);
+    const booking = await seedBooking(TWO_TIER_CHAIN, 5);
 
-    const first = await callApprove({ user: approverTier1, bookingId: booking.id, decision: "APPROVE" });
-    expect(first.statusCode).toBe(200);
+    // Genuine concurrency: two simultaneous APPROVE calls for the same
+    // approver on the same still-current step. A SEQUENTIAL second call
+    // would not exercise this path -- by the time it runs, the first call
+    // has already advanced currentStepIndex past tier 1, so the second call
+    // would get 403 ("not the approver for the current step"), not 409. Only
+    // a real race lands both requests on the same current step at once,
+    // which is what the unique constraint on (bookingId, stepIndex) guards
+    // against (server/prisma/migrations/*_approval_step_uniqueness).
+    const [first, second] = await Promise.all([
+      callApprove({ user: approverTier1, bookingId: booking.id, decision: "APPROVE" }),
+      callApprove({ user: approverTier1, bookingId: booking.id, decision: "APPROVE" }),
+    ]);
 
-    const second = await callApprove({ user: approverTier1, bookingId: booking.id, decision: "APPROVE" });
-    expect(second.statusCode).toBe(409);
+    const statusCodes = [first.statusCode, second.statusCode].sort();
+    expect(statusCodes).toEqual([200, 409]);
 
     const decisions = await prisma.approval.findMany({
       where: { bookingId: booking.id, stepIndex: 0 },
@@ -211,7 +227,7 @@ describe("approval routing (US-C2)", () => {
   });
 
   it("writes exactly one audit_log row per decision, in the same transaction as the status change", async () => {
-    const booking = await seedBooking(ONE_TIER_CHAIN);
+    const booking = await seedBooking(ONE_TIER_CHAIN, 6);
 
     const before = await prisma.auditLog.count({ where: { entityType: "booking", entityId: booking.id } });
     expect(before).toBe(0);
