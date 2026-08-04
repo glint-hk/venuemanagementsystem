@@ -8,7 +8,7 @@ import compression from "compression";
 
 import authRouter from "./routes/auth.js";
 import apiRouter from "./routes/api.js";
-import { publicAvailability } from "./controllers/venue.js";
+import * as publicController from "./controllers/publicController.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,9 +35,10 @@ const apiPrefix = mountPath("api");
 app.use(authPrefix, authRouter);
 app.use(apiPrefix, apiRouter);
 
-// US-B5: Public availability board — NO authentication, NO session escalation.
-// Mounted outside /api and /auth so it is accessible to anonymous users.
-app.get(mountPath("public", "availability"), publicAvailability);
+// ==========================================
+// PUBLIC (no auth — US-B5)
+// ==========================================
+apiRouter.get("/public/availability", publicController.getPublicAvailability);
 
 // Anything still under /auth or /api at this point matched no defined
 // route. Return JSON 404 here -- never let it fall through to the SPA

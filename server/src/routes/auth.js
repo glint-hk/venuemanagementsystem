@@ -84,10 +84,10 @@ router.post("/login", async (req, res) => {
 });
 
 /**
- * PUT /auth/roles/elevate
+ * PATCH /auth/roles/elevate
  * Admin-only role elevation (RoleElevationRequest contract).
  */
-router.put("/roles/elevate", authenticate, requireAdmin, async (req, res) => {
+router.patch("/roles/elevate", authenticate, requireAdmin, async (req, res) => {
   try {
     const { userId, role, approverTier } = req.body;
 
@@ -160,14 +160,6 @@ router.put("/roles/elevate", authenticate, requireAdmin, async (req, res) => {
     return res.status(500).json({ error: "Failed to update user role." });
   }
 });
-
-// POST /auth/login — sign in with email (dev mode) or Google OAuth
-router.post("/login", login);
-
-// POST /auth/refresh — rotate refresh token
-router.post("/refresh", refresh);
-
-// GET /auth/me — get current user (requires auth)
-router.get("/me", authenticate, me);
+;
 
 export default router;

@@ -15,13 +15,6 @@ const bookingInclude = {
   booker: { select: { id: true, name: true } },
 };
 
-const isExclusionViolation = (error) => {
-  return (
-    (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === 'P2004' || error.code === 'P2010')) ||
-    error?.message?.includes('23P01') ||
-    error?.meta?.code === '23P01'
-  );
-};
 
 /**
  * POST /api/bookings — create booking (submitted as PENDING).
@@ -59,6 +52,8 @@ export async function createBooking(req, res, next) {
       return res.status(404).json({ error: "Venue not found" });
     }
 
+    const chainSnapshot = (venue.approvalChain?.steps || [])
+
     if (await isVenueBlocked(venueId, start, end)) {
       return res
         .status(409)
@@ -74,7 +69,7 @@ export async function createBooking(req, res, next) {
           startAt: start,
           endAt: end,
           status: BookingStatus.PENDING,
-          approvalChainSnapshot: venue.approvalChain?.steps ?? [],
+          approvalChainSnapshot: chainSnapshot,
           currentStepIndex: 0,
         },
         include: bookingInclude,
@@ -122,7 +117,7 @@ export async function createBooking(req, res, next) {
         data: {
           entityType: 'booking',
           entityId: newBooking.id,
-          action: 'SUBMIT_BOOKING',
+          action: 'BOOKING_SUBMITTED',
           actorId: bookerId,
           metadata: { initialStatus: 'PENDING', venueId },
         },
@@ -375,7 +370,7 @@ export async function updateBooking(req, res, next) {
  * CANCEL a booking
  * PATCH /api/bookings/:id/cancel
  */
-export async const cancelBooking = async (req, res, next) => {
+export const cancelBooking = async (req, res, next) => {
   try {
     const { id } = req.params;
     const actorId = req.user.id;

@@ -128,6 +128,63 @@ export async function getVenueById(req, res, next) {
   }
 }
 
+export async function getVenueAvailability(req, res, next) {
+  try {
+    const { id: venueId } = req.params;
+    const { startAt, endAt } = req.query;
+ 
+    const venue = await prisma.venue.findUnique({ where: { id: venueId } });
+    if (!venue) {
+      return res.status(404).json({ error: "Venue not found" });
+    }
+ 
+    const start = startAt ? new Date(startAt) : new Date();
+    const end = endAt
+      ? new Date(endAt)
+      : new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
+ 
+    if (
+      Number.isNaN(start.getTime()) ||
+      Number.isNaN(end.getTime()) ||
+      end <= start
+    ) {
+      return res.status(400).json({ error: "Invalid date range." });
+    }
+ 
+    const bookings = await prisma.booking.findMany({
+      where: { ...activeBookingOverlapFilter(start, end), venueId },
+      select: { venueId: true, startAt: true, endAt: true },
+    });
+ 
+    const blocks = await prisma.venueBlock.findMany({
+      where: { venueId },
+      select: { venueId: true, startAt: true, endAt: true },
+    });
+ 
+    if (bookings.length === 0 && blocks.length === 0) {
+      return res.json([
+        { venueId, timeslot: { startAt: start, endAt: end }, busy: false },
+      ]);
+    }
+ 
+    const slots = bookings.map(formatPublicAvailabilitySlot);
+ 
+    for (const block of blocks) {
+      if (timeslotsOverlap(start, end, block.startAt, block.endAt)) {
+        slots.push({
+          venueId: block.venueId,
+          timeslot: { startAt: block.startAt, endAt: block.endAt },
+          busy: true,
+        });
+      }
+    }
+ 
+    return res.json(slots);
+  } catch (error) {
+    next(error);
+  }
+}
+
 /** POST /api/venues — create venue (Admin only, US-A4). */
 export async function createVenue(req, res, next) {
   try {

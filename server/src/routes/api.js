@@ -9,10 +9,6 @@ import { pendingApprovals, approveBooking } from "../controllers/approvalControl
 
 const router = Router();
 
-// ==========================================
-// PUBLIC (no auth — US-B5)
-// ==========================================
-router.get("/public/availability", publicController.getPublicAvailability);
 
 // ==========================================
 // BOOKING LIFECYCLE (US-A2)
@@ -20,7 +16,7 @@ router.get("/public/availability", publicController.getPublicAvailability);
 router.post("/bookings", authenticate, bookingController.createBooking);
 router.get("/bookings", authenticate, bookingController.getBookings);
 router.get("/bookings/:id", authenticate, bookingController.getBookingById);
-router.put("/bookings/:id", authenticate, bookingController.updateBooking);
+router.patch("/bookings/:id", authenticate, bookingController.updateBooking);
 router.patch(
   "/bookings/:id/cancel",
   authenticate,
@@ -35,6 +31,7 @@ router.get("/venues/:id", authenticate, venueController.getVenueById);
 router.post("/venues", authenticate, requireAdmin, venueController.createVenue);
 router.patch("/venues/:id", authenticate, requireAdmin, venueController.patchVenue);
 router.delete("/venues/:id", authenticate, requireAdmin, venueController.deleteVenue);
+router.get("/venues/:id/availability", authenticate, venueController.getVenueAvailability)
 
 // ==========================================
 // ADMIN CONSOLE (US-A4 / US-A5)
@@ -70,7 +67,7 @@ router.post(
   adminController.listAuditLogs
 );
 
-router.post("/bookings/:bookingId/approve", authenticate, approveBooking);
-router.post("/bookings/approvals", authenticate, pendingApprovals);
+router.get("/bookings/:bookingId/approve", authenticate, approveBooking);
+router.get("/bookings/approvals", authenticate, pendingApprovals);
 
 export default router;
