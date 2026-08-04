@@ -5,11 +5,10 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import compression from "compression";
-import swaggerUi from "swagger-ui-express";
-import YAML from "yamljs";
 
 import authRouter from "./routes/auth.js";
 import apiRouter from "./routes/api.js";
+import { publicAvailability } from "./controllers/venue.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,15 +27,6 @@ app.use(cors({ origin: process.env.CLIENT_ORIGIN, credentials: true }));
 app.use(compression());
 app.use(express.json());
 
-const swaggerDocument = YAML.load(
-  path.resolve(__dirname, "../openapi.yml")
-);
-app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
-
-app.get(mountPath("healthz"), (_req, res) => {
-  res.status(200).json({ status: "ok" });
-});
-
 // TODO(Team 3): start cron scheduler (server/src/lib/scheduler.js) here.
 
 const authPrefix = mountPath("auth");
@@ -45,13 +35,29 @@ const apiPrefix = mountPath("api");
 app.use(authPrefix, authRouter);
 app.use(apiPrefix, apiRouter);
 
-app.use([authPrefix, apiPrefix], (_req, res) => {
+// US-B5: Public availability board — NO authentication, NO session escalation.
+// Mounted outside /api and /auth so it is accessible to anonymous users.
+app.get(mountPath("public", "availability"), publicAvailability);
+
+// Anything still under /auth or /api at this point matched no defined
+// route. Return JSON 404 here -- never let it fall through to the SPA
+// fallback below, which would silently serve index.html for a bad API call.
+app.use([authPrefix, apiPrefix], (req, res) => {
   res.status(404).json({ error: "Not Found" });
 });
 
 app.use(basePath, express.static(clientDist));
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(clientDist, "index.html"));
+app.get("*", (req, res, next) => {
+  res.sendFile(path.join(clientDist, "index.html"), (err) => {
+    if (err) {
+      if (err.code === "ENOENT") {
+        return res.status(404).type("text/plain").send(
+          "Client build not found in server/public. In development, use Vite dev server at http://localhost:5173 or run 'npm run build'."
+        );
+      }
+      next(err);
+    }
+  });
 });
 
 // eslint-disable-next-line no-unused-vars

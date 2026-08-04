@@ -1,4 +1,5 @@
 import prisma from "../lib/prisma.js";
+import { Role } from "shared";
 
 /**
  * POST /api/admin/venues/:id/blocks — create venue blackout (US-A4).
@@ -125,5 +126,39 @@ export async function getUtilizationMetrics(req, res, next) {
     });
   } catch (error) {
     next(error);
+  }
+}
+
+export async function listUsers(req, res, next) {
+  try {
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        approverTier: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    return res.json(users);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listAuditLogs(req, res, next) {
+  try {
+    const logs = await prisma.auditLog.findMany({
+      include: {
+        actor: { select: { name: true, email: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+    return res.json(logs);
+  } catch (err) {
+    next(err);
   }
 }

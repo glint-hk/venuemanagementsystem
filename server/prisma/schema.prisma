@@ -151,6 +151,11 @@ model Approval {
   booking  Booking @relation(fields: [bookingId], references: [id])
   approver User    @relation(fields: [approverId], references: [id])
 
+  // Concurrent decisions on the same step must not both be recordable — the
+  // application-level "does a decision already exist" check alone is a
+  // SELECT-then-INSERT race (the same anti-pattern the booking exclusion
+  // constraint exists to avoid). This is the database-level guarantee.
+  @@unique([bookingId, stepIndex])
   @@map("approvals")
 }
 

@@ -15,6 +15,14 @@ const bookingInclude = {
   booker: { select: { id: true, name: true } },
 };
 
+const isExclusionViolation = (error) => {
+  return (
+    (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === 'P2004' || error.code === 'P2010')) ||
+    error?.message?.includes('23P01') ||
+    error?.meta?.code === '23P01'
+  );
+};
+
 /**
  * POST /api/bookings — create booking (submitted as PENDING).
  */
@@ -81,13 +89,42 @@ export async function createBooking(req, res, next) {
         },
       });
 
+      // Team 3 addition: nobody was ever notified that a decision was
+      // waiting on them. Alert the tier-1 approver in the same transaction
+      // as the submission-confirmation notification above (US-C2/US-C4).
+      if (chainSnapshot.length > 0) {
+        const firstStep = chainSnapshot[0];
+        const firstApprover = await tx.user.findFirst({
+          where: { role: 'APPROVER', approverTier: firstStep.tier },
+        });
+        // No approver seeded for this tier — the booking still gets created;
+        // there is simply no one to notify until one is assigned.
+        if (firstApprover) {
+          await tx.notificationOutbox.create({
+            data: {
+              bookingId: newBooking.id,
+              recipientId: firstApprover.id,
+              templateKey: 'APPROVAL_REQUESTED',
+              payload: {
+                bookingId: newBooking.id,
+                venueName: venue.name,
+                purpose: newBooking.purpose,
+                timeslot: { startAt: newBooking.startAt, endAt: newBooking.endAt },
+                stepTier: firstStep.tier,
+              },
+            },
+          });
+        }
+      }
+
+      // Audit Log Entity per entities.js: 'booking'
       await tx.auditLog.create({
         data: {
-          entityType: "booking",
+          entityType: 'booking',
           entityId: newBooking.id,
-          action: "BOOKING_CREATED",
+          action: 'SUBMIT_BOOKING',
           actorId: bookerId,
-          metadata: { initialStatus: BookingStatus.PENDING, venueId },
+          metadata: { initialStatus: 'PENDING', venueId },
         },
       });
 
@@ -306,9 +343,9 @@ export async function updateBooking(req, res, next) {
 
       await tx.auditLog.create({
         data: {
-          entityType: "booking",
+          entityType: 'booking',
           entityId: id,
-          action: "BOOKING_MODIFIED",
+          action: 'MODIFY_BOOKING',
           actorId,
           metadata: {
             previousStatus: existing.status,
@@ -318,7 +355,7 @@ export async function updateBooking(req, res, next) {
         },
       });
 
-      return tx.booking.findUnique({
+      return await tx.booking.findUnique({
         where: { id },
         include: bookingInclude,
       });
@@ -326,20 +363,19 @@ export async function updateBooking(req, res, next) {
 
     return res.status(200).json(formatBookingDTO(result));
   } catch (error) {
-    if (error.status) {
-      return res.status(error.status).json({ error: error.message });
-    }
+    if (error.status) return res.status(error.status).json({ error: error.message });
     if (isExclusionViolation(error)) {
-      return res.status(409).json({
-        error: "The requested slot is already booked for this venue.",
-      });
+      return res.status(409).json({ error: 'The requested slot is already booked for this venue.' });
     }
     next(error);
   }
-}
+};
 
-/** PATCH /api/bookings/:id/cancel — cancel booking and release slot. */
-export async function cancelBooking(req, res, next) {
+/**
+ * CANCEL a booking
+ * PATCH /api/bookings/:id/cancel
+ */
+export async const cancelBooking = async (req, res, next) => {
   try {
     const { id } = req.params;
     const actorId = req.user.id;
@@ -383,7 +419,7 @@ export async function cancelBooking(req, res, next) {
         data: {
           entityType: "booking",
           entityId: id,
-          action: "BOOKING_CANCELLED",
+          action: "CANCEL_BOOKING",
           actorId,
           metadata: {
             previousStatus: existing.status,

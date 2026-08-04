@@ -5,6 +5,7 @@ import * as bookingController from "../controllers/bookingController.js";
 import * as venueController from "../controllers/venueController.js";
 import * as adminController from "../controllers/adminController.js";
 import * as publicController from "../controllers/publicController.js";
+import { pendingApprovals, approveBooking } from "../controllers/approvalController.js";
 
 const router = Router();
 
@@ -56,5 +57,20 @@ router.get(
   requireAdmin,
   adminController.getUtilizationMetrics
 );
+router.post(
+  "/admin/users",
+  authenticate,
+  requireAdmin,
+  adminController.listUsers
+);
+router.post(
+  "/admin/logs",
+  authenticate,
+  requireAdmin,
+  adminController.listAuditLogs
+);
+
+router.post("/bookings/:bookingId/approve", authenticate, approveBooking);
+router.post("/bookings/approvals", authenticate, pendingApprovals);
 
 export default router;
