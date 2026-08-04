@@ -8,6 +8,7 @@ import compression from "compression";
 
 import authRouter from "./routes/auth.js";
 import apiRouter from "./routes/api.js";
+import { publicAvailability } from "./controllers/venue.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.join(__dirname, "..", "public");
@@ -39,6 +40,10 @@ const apiPrefix = mountPath("api");
 app.use(authPrefix, authRouter);
 app.use(apiPrefix, apiRouter);
 
+// US-B5: Public availability board — NO authentication, NO session escalation.
+// Mounted outside /api and /auth so it is accessible to anonymous users.
+app.get(mountPath("public", "availability"), publicAvailability);
+
 // Anything still under /auth or /api at this point matched no defined
 // route. Return JSON 404 here -- never let it fall through to the SPA
 // fallback below, which would silently serve index.html for a bad API call.
@@ -49,8 +54,17 @@ app.use([authPrefix, apiPrefix], (req, res) => {
 // Serve the built SPA (see README.md "Single-origin SPA + API") with a
 // client-side-routing fallback for unmatched non-API routes.
 app.use(basePath, express.static(clientDist));
-app.get("*", (req, res) => {
-  res.sendFile(path.join(clientDist, "index.html"));
+app.get("*", (req, res, next) => {
+  res.sendFile(path.join(clientDist, "index.html"), (err) => {
+    if (err) {
+      if (err.code === "ENOENT") {
+        return res.status(404).type("text/plain").send(
+          "Client build not found in server/public. In development, use Vite dev server at http://localhost:5173 or run 'npm run build'."
+        );
+      }
+      next(err);
+    }
+  });
 });
 
 // eslint-disable-next-line no-unused-vars
