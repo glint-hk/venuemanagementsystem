@@ -22,9 +22,15 @@
     "ci:check-audit-log-mutations": "bash .github/scripts/check-audit-log-mutations.sh"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "supertest": "^7.2.2",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "google-auth-library": "^11.0.0",
+    "jsonwebtoken": "^9.0.3"
   }
 }
