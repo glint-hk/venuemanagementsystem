@@ -2,9 +2,11 @@ import { Router } from "express";
 import prisma from "../lib/prisma.js";
 import { Role } from "../../../shared/index.js";
 import { authenticate, requireAdmin } from "../middleware/authMiddleware.js";
+import { OAuth2Client } from "google-auth-library";
 
 const router = Router();
 const ALLOWED_DOMAIN = "iiml.ac.in";
+const googleClient = new OAuth2Client(process.env.GOOGLE_OAUTH_CLIENT_ID);
 
 /**
  * POST /auth/login
@@ -12,14 +14,35 @@ const ALLOWED_DOMAIN = "iiml.ac.in";
  */
 router.post("/login", async (req, res) => {
   try {
-    const { email, name } = req.body;
+    const { idToken, email: rawEmail, name: rawName } = req.body;
 
+    let email = rawEmail;
+    let name = rawName;
+
+    // 1. Google OAuth Flow (if idToken is provided)
+    if (idToken) {
+      try {
+        const ticket = await googleClient.verifyIdToken({
+          idToken,
+          audience: process.env.GOOGLE_OAUTH_CLIENT_ID,
+        });
+        const payload = ticket.getPayload();
+        email = payload.email;
+        name = payload.name;
+      } catch (err) {
+        console.error("Google Token Verification Failed:", err);
+        return res.status(401).json({ error: "Invalid or expired Google token." });
+      }
+    }
+
+    // 2. Validate Email Presence
     if (!email || typeof email !== "string") {
       return res
         .status(400)
-        .json({ error: "Valid institutional email is required." });
+        .json({ error: "Valid institutional email or Google ID token is required." });
     }
 
+    // 3. Domain Check
     const domain = email.split("@")[1];
     if (domain !== ALLOWED_DOMAIN) {
       return res.status(403).json({
@@ -27,6 +50,7 @@ router.post("/login", async (req, res) => {
       });
     }
 
+    // 4. Find or Create User
     let user = await prisma.user.findUnique({ where: { email } });
 
     if (!user) {
@@ -39,6 +63,7 @@ router.post("/login", async (req, res) => {
       });
     }
 
+    // 5. Response Payload
     return res.status(200).json({
       message: "Authentication successful",
       token: user.id,
@@ -56,11 +81,6 @@ router.post("/login", async (req, res) => {
       .status(500)
       .json({ error: "Authentication failed due to a server error." });
   }
-});
-
-/** GET /auth/me — current session user. */
-router.get("/me", authenticate, (req, res) => {
-  return res.status(200).json({ user: req.user });
 });
 
 /**
