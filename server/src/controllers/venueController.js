@@ -1,111 +1,258 @@
 import prisma from "../lib/prisma.js";
+import { activeBookingOverlapFilter } from "../lib/venueHelpers.js";
+import { timeslotsOverlap } from "../lib/bookingHelpers.js";
 
 /**
  * GET /api/venues
- * List all active venues (Public / Authenticated users)
+ * List venues with optional filters and availability (US-A3).
+ *
+ * Query: type, minCapacity, attribute, startAt, endAt
  */
-export const getAllVenues = async (req, res, next) => {
+export async function getAllVenues(req, res, next) {
   try {
+    const { type, minCapacity, attribute, startAt, endAt } = req.query;
+
+    const where = {};
+    if (type) where.type = type;
+    if (minCapacity) where.capacity = { gte: Number(minCapacity) };
+    if (attribute) where.attributes = { has: attribute };
+
     const venues = await prisma.venue.findMany({
-      include: {
-        blocks: true, // Include active venue blackout dates
-      },
+      where,
+      include: { blocks: true, approvalChain: true },
       orderBy: { name: "asc" },
     });
-    return res.json({ venues });
+
+    let availabilityWindow = null;
+    if (startAt && endAt) {
+      const windowStart = new Date(startAt);
+      const windowEnd = new Date(endAt);
+      if (
+        !Number.isNaN(windowStart.getTime()) &&
+        !Number.isNaN(windowEnd.getTime()) &&
+        windowEnd > windowStart
+      ) {
+        availabilityWindow = { start: windowStart, end: windowEnd };
+      }
+    }
+
+    let activeBookings = [];
+    if (availabilityWindow) {
+      activeBookings = await prisma.booking.findMany({
+        where: {
+          ...activeBookingOverlapFilter(
+            availabilityWindow.start,
+            availabilityWindow.end
+          ),
+        },
+        select: { venueId: true, startAt: true, endAt: true },
+      });
+    }
+
+    const result = venues.map((venue) => {
+      const dto = {
+        id: venue.id,
+        name: venue.name,
+        type: venue.type,
+        location: venue.location,
+        capacity: venue.capacity,
+        attributes: venue.attributes,
+        approvalChainId: venue.approvalChainId,
+        blocks: venue.blocks.map((b) => ({
+          id: b.id,
+          startAt: b.startAt,
+          endAt: b.endAt,
+          recurring: b.recurring,
+          reason: b.reason,
+        })),
+      };
+
+      if (availabilityWindow) {
+        const blocked = venue.blocks.some((block) =>
+          timeslotsOverlap(
+            availabilityWindow.start,
+            availabilityWindow.end,
+            block.startAt,
+            block.endAt
+          )
+        );
+        const booked = activeBookings.some(
+          (b) =>
+            b.venueId === venue.id &&
+            timeslotsOverlap(
+              availabilityWindow.start,
+              availabilityWindow.end,
+              b.startAt,
+              b.endAt
+            )
+        );
+        dto.available = !blocked && !booked;
+      }
+
+      return dto;
+    });
+
+    return res.json({ venues: result });
   } catch (error) {
     next(error);
   }
-};
+}
 
-/**
- * GET /api/venues/:id
- * Get single venue details
- */
-export const getVenueById = async (req, res, next) => {
+/** GET /api/venues/:id */
+export async function getVenueById(req, res, next) {
   try {
     const { id } = req.params;
     const venue = await prisma.venue.findUnique({
       where: { id },
-      include: { blocks: true },
+      include: { blocks: true, approvalChain: true },
     });
 
     if (!venue) {
       return res.status(404).json({ error: "Venue not found" });
     }
 
-    return res.json({ venue });
+    return res.json({
+      venue: {
+        id: venue.id,
+        name: venue.name,
+        type: venue.type,
+        location: venue.location,
+        capacity: venue.capacity,
+        attributes: venue.attributes,
+        approvalChainId: venue.approvalChainId,
+        blocks: venue.blocks,
+      },
+    });
   } catch (error) {
     next(error);
   }
-};
+}
 
-/**
- * POST /api/venues
- * Create a new venue (Admin only)
- */
-export const createVenue = async (req, res, next) => {
+/** POST /api/venues — create venue (Admin only, US-A4). */
+export async function createVenue(req, res, next) {
   try {
-    const { name, capacity, type, location, attributes } = req.body;
+    const { name, capacity, type, location, attributes, approvalChainId } =
+      req.body;
 
-    if (!name || !capacity) {
-      return res.status(400).json({ error: "Name and capacity are required" });
+    if (!name || capacity == null || !type || !location || !approvalChainId) {
+      return res.status(400).json({
+        error:
+          "name, capacity, type, location, and approvalChainId are required.",
+      });
     }
 
-    const venue = await prisma.venue.create({
-      data: {
-        name,
-        capacity: Number(capacity),
-        type,
-        location,
-        attributes: attributes || {},
-      },
+    const chain = await prisma.approvalChain.findUnique({
+      where: { id: approvalChainId },
+    });
+    if (!chain) {
+      return res.status(400).json({ error: "Invalid approvalChainId." });
+    }
+
+    const venue = await prisma.$transaction(async (tx) => {
+      const created = await tx.venue.create({
+        data: {
+          name,
+          capacity: Number(capacity),
+          type,
+          location,
+          attributes: Array.isArray(attributes) ? attributes : [],
+          approvalChainId,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          entityType: "venue",
+          entityId: created.id,
+          action: "VENUE_CREATED",
+          actorId: req.user.id,
+          metadata: { name, type, location },
+        },
+      });
+
+      return created;
     });
 
     return res.status(201).json({ venue });
   } catch (error) {
     next(error);
   }
-};
+}
 
-/**
- * PATCH /api/venues/:id
- * Modify venue details (Admin only)
- */
-export const patchVenue = async (req, res, next) => {
+/** PATCH /api/venues/:id — update venue (Admin only). */
+export async function patchVenue(req, res, next) {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const { name, capacity, type, location, attributes, approvalChainId } =
+      req.body;
 
-    if (updates.capacity) {
-      updates.capacity = Number(updates.capacity);
+    const data = {};
+    if (name != null) data.name = name;
+    if (capacity != null) data.capacity = Number(capacity);
+    if (type != null) data.type = type;
+    if (location != null) data.location = location;
+    if (attributes != null) {
+      data.attributes = Array.isArray(attributes) ? attributes : [];
+    }
+    if (approvalChainId != null) {
+      const chain = await prisma.approvalChain.findUnique({
+        where: { id: approvalChainId },
+      });
+      if (!chain) {
+        return res.status(400).json({ error: "Invalid approvalChainId." });
+      }
+      data.approvalChainId = approvalChainId;
     }
 
-    const venue = await prisma.venue.update({
-      where: { id },
-      data: updates,
+    const venue = await prisma.$transaction(async (tx) => {
+      const updated = await tx.venue.update({ where: { id }, data });
+
+      await tx.auditLog.create({
+        data: {
+          entityType: "venue",
+          entityId: id,
+          action: "VENUE_UPDATED",
+          actorId: req.user.id,
+          metadata: data,
+        },
+      });
+
+      return updated;
     });
 
     return res.json({ venue });
   } catch (error) {
+    if (error.code === "P2025") {
+      return res.status(404).json({ error: "Venue not found" });
+    }
     next(error);
   }
-};
+}
 
-/**
- * DELETE /api/venues/:id
- * Delete venue (Admin only)
- */
-export const deleteVenue = async (req, res, next) => {
+/** DELETE /api/venues/:id — delete venue (Admin only). */
+export async function deleteVenue(req, res, next) {
   try {
     const { id } = req.params;
 
-    await prisma.delete({
-      where: { id },
+    await prisma.$transaction(async (tx) => {
+      await tx.venue.delete({ where: { id } });
+
+      await tx.auditLog.create({
+        data: {
+          entityType: "venue",
+          entityId: id,
+          action: "VENUE_DELETED",
+          actorId: req.user.id,
+          metadata: {},
+        },
+      });
     });
 
     return res.json({ message: "Venue deleted successfully" });
   } catch (error) {
+    if (error.code === "P2025") {
+      return res.status(404).json({ error: "Venue not found" });
+    }
     next(error);
   }
-};
+}

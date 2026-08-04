@@ -5,11 +5,17 @@ import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import compression from "compression";
+import swaggerUi from "swagger-ui-express";
+import YAML from "yamljs";
 
 import authRouter from "./routes/auth.js";
 import apiRouter from "./routes/api.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+
 const clientDist = path.join(__dirname, "..", "public");
 const basePath = process.env.BASE_PATH || "/";
 
@@ -17,21 +23,21 @@ function mountPath(...segments) {
   return `${basePath}/${segments.join("/")}`.replace(/\/+/g, "/");
 }
 
-const app = express();
-
 app.use(helmet());
 app.use(cors({ origin: process.env.CLIENT_ORIGIN, credentials: true }));
 app.use(compression());
 app.use(express.json());
 
-// Unauthenticated, outside /api — used by process managers / load balancers,
-// not the application's own role-gated routes.
-app.get(mountPath("healthz"), (req, res) => {
+const swaggerDocument = YAML.load(
+  path.resolve(__dirname, "../openapi.yml")
+);
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+app.get(mountPath("healthz"), (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
-// TODO(Team 3): start the cron scheduler (server/src/lib/scheduler.js) here
-// once it exists — auto-expiry, escalation, and outbox-send jobs.
+// TODO(Team 3): start cron scheduler (server/src/lib/scheduler.js) here.
 
 const authPrefix = mountPath("auth");
 const apiPrefix = mountPath("api");
@@ -39,40 +45,34 @@ const apiPrefix = mountPath("api");
 app.use(authPrefix, authRouter);
 app.use(apiPrefix, apiRouter);
 
-// Anything still under /auth or /api at this point matched no defined
-// route. Return JSON 404 here -- never let it fall through to the SPA
-// fallback below, which would silently serve index.html for a bad API call.
-app.use([authPrefix, apiPrefix], (req, res) => {
+app.use([authPrefix, apiPrefix], (_req, res) => {
   res.status(404).json({ error: "Not Found" });
 });
 
-// Serve the built SPA (see README.md "Single-origin SPA + API") with a
-// client-side-routing fallback for unmatched non-API routes.
 app.use(basePath, express.static(clientDist));
-app.get("*", (req, res) => {
+app.get("*", (_req, res) => {
   res.sendFile(path.join(clientDist, "index.html"));
 });
 
 // eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(err.status || 500).json({ error: "Internal Server Error" });
-});
-
-app.use((err, req, res, next) => {
+app.use((err, _req, res, _next) => {
   console.error(err);
 
-  // Prisma unique constraint violation (e.g. duplicate email)
-  if (err.code === 'P2002') {
-    return res.status(409).json({ error: 'A record with this unique value already exists.' });
+  if (err.code === "P2002") {
+    return res.status(409).json({
+      error: "A record with this unique value already exists.",
+    });
   }
 
-  // PostgreSQL Exclusion Constraint Violation (Double-booking attempt)
-  if (err.code === 'P2010' || err.message?.includes('exclusion constraint')) {
-    return res.status(409).json({ error: 'Venue is already booked for the requested timeslot.' });
+  if (err.code === "P2010" || err.message?.includes("exclusion constraint")) {
+    return res.status(409).json({
+      error: "Venue is already booked for the requested timeslot.",
+    });
   }
 
-  return res.status(500).json({ error: err.message || 'Internal Server Error' });
+  return res
+    .status(err.status || 500)
+    .json({ error: err.message || "Internal Server Error" });
 });
 
 const port = process.env.PORT || 4000;
@@ -85,3 +85,5 @@ function shutdown() {
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+export default app;

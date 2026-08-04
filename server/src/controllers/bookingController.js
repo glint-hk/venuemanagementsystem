@@ -1,64 +1,45 @@
-import prisma from '../prisma.js';
-import { Prisma } from '@prisma/client';
+import prisma from "../lib/prisma.js";
+import { BookingStatus, Role } from "../../../shared/index.js";
+import { formatBookingDTO, isExclusionViolation } from "../lib/bookingHelpers.js";
+import { assertTransition } from "../lib/stateMachine.js";
+import { isVenueBlocked } from "../lib/venueHelpers.js";
 
-/**
- * Helper to transform DB booking record into BookingDTO contract shape
- * (contracts.js -> BookingDTO)
- */
-const formatBookingDTO = (booking) => ({
-  id: booking.id,
-  venue: booking.venue
-    ? {
-        id: booking.venue.id,
-        name: booking.venue.name,
-        location: booking.venue.location,
-      }
-    : undefined,
-  booker: booking.booker
-    ? {
-        id: booking.booker.id,
-        name: booking.booker.name,
-      }
-    : undefined,
-  purpose: booking.purpose,
-  timeslot: {
-    startAt: booking.startAt,
-    endAt: booking.endAt,
-  },
-  status: booking.status,
-  currentStepIndex: booking.currentStepIndex,
-});
+const TERMINAL_STATUSES = [
+  BookingStatus.REJECTED,
+  BookingStatus.COMPLETED,
+  BookingStatus.CANCELLED,
+];
 
-/**
- * Helper to identify PostgreSQL exclusion constraint violations (23P01)
- */
-const isExclusionViolation = (error) => {
-  return (
-    (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === 'P2004' || error.code === 'P2010')) ||
-    error?.message?.includes('23P01') ||
-    error?.meta?.code === '23P01'
-  );
+const bookingInclude = {
+  venue: true,
+  booker: { select: { id: true, name: true } },
 };
 
 /**
- * CREATE a new booking (Submitted directly as PENDING)
- * POST /api/bookings
+ * POST /api/bookings — create booking (submitted as PENDING).
  */
-export const createBooking = async (req, res, next) => {
+export async function createBooking(req, res, next) {
   try {
     const bookerId = req.user.id;
-    // Extract per CreateBookingRequest contract: { venueId, purpose, timeslot: { startAt, endAt } }
     const { venueId, purpose, timeslot } = req.body;
 
+    if (!venueId || !purpose) {
+      return res
+        .status(400)
+        .json({ error: "venueId and purpose are required." });
+    }
+
     if (!timeslot?.startAt || !timeslot?.endAt) {
-      return res.status(400).json({ error: 'Missing timeslot.startAt or timeslot.endAt' });
+      return res
+        .status(400)
+        .json({ error: "Missing timeslot.startAt or timeslot.endAt" });
     }
 
     const start = new Date(timeslot.startAt);
     const end = new Date(timeslot.endAt);
 
-    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
-      return res.status(400).json({ error: 'Invalid timeslot timeframe' });
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      return res.status(400).json({ error: "Invalid timeslot timeframe" });
     }
 
     const venue = await prisma.venue.findUnique({
@@ -67,7 +48,13 @@ export const createBooking = async (req, res, next) => {
     });
 
     if (!venue) {
-      return res.status(404).json({ error: 'Venue not found' });
+      return res.status(404).json({ error: "Venue not found" });
+    }
+
+    if (await isVenueBlocked(venueId, start, end)) {
+      return res
+        .status(409)
+        .json({ error: "Venue is blocked for the requested timeslot." });
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -78,33 +65,29 @@ export const createBooking = async (req, res, next) => {
           purpose,
           startAt: start,
           endAt: end,
-          status: 'PENDING',
-          approvalChainSnapshot: venue.approvalChain?.steps || [],
+          status: BookingStatus.PENDING,
+          approvalChainSnapshot: venue.approvalChain?.steps ?? [],
           currentStepIndex: 0,
         },
-        include: {
-          venue: true,
-          booker: { select: { id: true, name: true } },
-        },
+        include: bookingInclude,
       });
 
       await tx.notificationOutbox.create({
         data: {
           bookingId: newBooking.id,
           recipientId: bookerId,
-          templateKey: 'BOOKING_SUBMITTED',
+          templateKey: "BOOKING_SUBMITTED",
           payload: { bookingId: newBooking.id, venueName: venue.name },
         },
       });
 
-      // Audit Log Entity per entities.js: 'booking'
       await tx.auditLog.create({
         data: {
-          entityType: 'booking',
+          entityType: "booking",
           entityId: newBooking.id,
-          action: 'SUBMIT_BOOKING',
+          action: "BOOKING_CREATED",
           actorId: bookerId,
-          metadata: { initialStatus: 'PENDING', venueId },
+          metadata: { initialStatus: BookingStatus.PENDING, venueId },
         },
       });
 
@@ -114,49 +97,43 @@ export const createBooking = async (req, res, next) => {
     return res.status(201).json(formatBookingDTO(result));
   } catch (error) {
     if (isExclusionViolation(error)) {
-      return res.status(409).json({ error: 'The requested slot is already booked for this venue.' });
+      return res.status(409).json({
+        error: "The requested slot is already booked for this venue.",
+      });
     }
     next(error);
   }
-};
+}
 
-/**
- * READ / List bookings
- * GET /api/bookings
- */
-export const getBookings = async (req, res, next) => {
+/** GET /api/bookings — list bookings (scoped by role). */
+export async function getBookings(req, res, next) {
   try {
     const { venueId, status, bookerId } = req.query;
     const whereClause = {};
 
     if (venueId) whereClause.venueId = venueId;
     if (status) whereClause.status = status;
-    if (bookerId) whereClause.bookerId = bookerId;
 
-    if (req.user.role === 'BOOKER') {
+    if (req.user.role === Role.BOOKER) {
       whereClause.bookerId = req.user.id;
+    } else if (bookerId) {
+      whereClause.bookerId = bookerId;
     }
 
     const bookings = await prisma.booking.findMany({
       where: whereClause,
-      include: {
-        venue: true,
-        booker: { select: { id: true, name: true } },
-      },
-      orderBy: { createdAt: 'desc' },
+      include: bookingInclude,
+      orderBy: { createdAt: "desc" },
     });
 
     return res.status(200).json(bookings.map(formatBookingDTO));
   } catch (error) {
     next(error);
   }
-};
+}
 
-/**
- * READ single booking by ID
- * GET /api/bookings/:id
- */
-export const getBookingById = async (req, res, next) => {
+/** GET /api/bookings/:id — single booking with access control. */
+export async function getBookingById(req, res, next) {
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -164,41 +141,45 @@ export const getBookingById = async (req, res, next) => {
 
     const booking = await prisma.booking.findUnique({
       where: { id },
-      include: {
-        venue: true,
-        booker: { select: { id: true, name: true } },
-      },
+      include: bookingInclude,
     });
 
     if (!booking) {
-      return res.status(404).json({ error: 'Booking not found' });
+      return res.status(404).json({ error: "Booking not found" });
     }
 
     const isBooker = booking.bookerId === userId;
-    const isAdmin = userRole === 'ADMIN';
+    const isAdmin = userRole === Role.ADMIN;
 
-    const currentStep = booking.approvalChainSnapshot?.[booking.currentStepIndex];
-    const isCurrentApprover = currentStep && (currentStep.approverId === userId || currentStep.role === userRole);
+    const snapshot = booking.approvalChainSnapshot;
+    const currentStep = Array.isArray(snapshot)
+      ? snapshot[booking.currentStepIndex]
+      : null;
+    const isCurrentApprover =
+      userRole === Role.APPROVER &&
+      currentStep &&
+      req.user.approverTier === currentStep.tier;
 
     if (!isBooker && !isAdmin && !isCurrentApprover) {
-      return res.status(403).json({ error: 'Forbidden: You do not have permission to view this booking' });
+      return res.status(403).json({
+        error: "Forbidden: You do not have permission to view this booking",
+      });
     }
 
     return res.status(200).json(formatBookingDTO(booking));
   } catch (error) {
     next(error);
   }
-};
+}
 
 /**
- * UPDATE / Modify an existing booking
- * PUT /api/bookings/:id
+ * PUT /api/bookings/:id — modify booking.
+ * Slot/venue changes re-enter approval: → MODIFIED → PENDING with fresh snapshot.
  */
-export const updateBooking = async (req, res, next) => {
+export async function updateBooking(req, res, next) {
   try {
     const { id } = req.params;
     const actorId = req.user.id;
-    // Extract per ModifyBookingRequest contract
     const { purpose, timeslot, venueId } = req.body;
 
     const result = await prisma.$transaction(async (tx) => {
@@ -207,22 +188,51 @@ export const updateBooking = async (req, res, next) => {
         include: { venue: { include: { approvalChain: true } } },
       });
 
-      if (!existing) throw { status: 404, message: 'Booking not found' };
-
-      if (req.user.role !== 'ADMIN' && existing.bookerId !== actorId) {
-        throw { status: 403, message: 'Forbidden: Cannot modify another user booking' };
+      if (!existing) {
+        throw { status: 404, message: "Booking not found" };
       }
 
-      if (['REJECTED', 'COMPLETED', 'CANCELLED'].includes(existing.status)) {
-        throw { status: 400, message: `Cannot modify booking in terminal status: ${existing.status}` };
+      if (req.user.role !== Role.ADMIN && existing.bookerId !== actorId) {
+        throw {
+          status: 403,
+          message: "Forbidden: Cannot modify another user booking",
+        };
       }
 
-      const updatedStart = timeslot?.startAt ? new Date(timeslot.startAt) : existing.startAt;
-      const updatedEnd = timeslot?.endAt ? new Date(timeslot.endAt) : existing.endAt;
-      const updatedVenueId = venueId || existing.venueId;
+      if (TERMINAL_STATUSES.includes(existing.status)) {
+        throw {
+          status: 400,
+          message: `Cannot modify booking in terminal status: ${existing.status}`,
+        };
+      }
 
-      if (isNaN(updatedStart.getTime()) || isNaN(updatedEnd.getTime()) || updatedEnd <= updatedStart) {
-        throw { status: 400, message: 'Invalid startAt or endAt timeframe' };
+      const updatedStart = timeslot?.startAt
+        ? new Date(timeslot.startAt)
+        : existing.startAt;
+      const updatedEnd = timeslot?.endAt
+        ? new Date(timeslot.endAt)
+        : existing.endAt;
+      const updatedVenueId = venueId ?? existing.venueId;
+      const updatedPurpose = purpose ?? existing.purpose;
+
+      if (
+        Number.isNaN(updatedStart.getTime()) ||
+        Number.isNaN(updatedEnd.getTime()) ||
+        updatedEnd <= updatedStart
+      ) {
+        throw { status: 400, message: "Invalid timeslot timeframe" };
+      }
+
+      const targetVenue =
+        updatedVenueId !== existing.venueId
+          ? await tx.venue.findUnique({
+              where: { id: updatedVenueId },
+              include: { approvalChain: true },
+            })
+          : existing.venue;
+
+      if (!targetVenue) {
+        throw { status: 404, message: "Venue not found" };
       }
 
       const isSlotChanged =
@@ -230,36 +240,57 @@ export const updateBooking = async (req, res, next) => {
         updatedEnd.getTime() !== existing.endAt.getTime() ||
         updatedVenueId !== existing.venueId;
 
-      let nextStatus = existing.status;
+      if (isSlotChanged && (await isVenueBlocked(updatedVenueId, updatedStart, updatedEnd, tx))) {
+        throw {
+          status: 409,
+          message: "Venue is blocked for the requested timeslot.",
+        };
+      }
+
+      let workingStatus = existing.status;
       let freshSnapshot = existing.approvalChainSnapshot;
-      let resetStepIndex = false;
+      let stepIndex = existing.currentStepIndex;
+
+      const baseData = {
+        venueId: updatedVenueId,
+        purpose: updatedPurpose,
+        startAt: updatedStart,
+        endAt: updatedEnd,
+      };
 
       if (isSlotChanged) {
-        if (['PENDING', 'APPROVED', 'MODIFIED'].includes(existing.status)) {
-          nextStatus = 'PENDING';
-          freshSnapshot = existing.venue.approvalChain?.steps || [];
-          resetStepIndex = true;
+        if (
+          existing.status === BookingStatus.PENDING ||
+          existing.status === BookingStatus.APPROVED
+        ) {
+          assertTransition(existing.status, BookingStatus.MODIFIED);
+          workingStatus = BookingStatus.MODIFIED;
+          freshSnapshot = targetVenue.approvalChain?.steps ?? [];
+        } else if (existing.status === BookingStatus.MODIFIED) {
+          freshSnapshot = targetVenue.approvalChain?.steps ?? [];
         }
+
+        assertTransition(workingStatus, BookingStatus.PENDING);
+        workingStatus = BookingStatus.PENDING;
+        stepIndex = 0;
       }
 
       const updatedCount = await tx.booking.updateMany({
-        where: {
-          id,
-          status: existing.status,
-        },
+        where: { id, status: existing.status },
         data: {
-          venueId: updatedVenueId,
-          purpose: purpose || existing.purpose,
-          startAt: updatedStart,
-          endAt: updatedEnd,
-          status: nextStatus,
-          currentStepIndex: resetStepIndex ? 0 : existing.currentStepIndex,
+          ...baseData,
+          status: workingStatus,
+          currentStepIndex: stepIndex,
           approvalChainSnapshot: freshSnapshot,
         },
       });
 
       if (updatedCount.count === 0) {
-        throw { status: 409, message: 'Conflict: Booking status was modified concurrently by another request.' };
+        throw {
+          status: 409,
+          message:
+            "Conflict: Booking status was modified concurrently by another request.",
+        };
       }
 
       if (isSlotChanged) {
@@ -267,50 +298,48 @@ export const updateBooking = async (req, res, next) => {
           data: {
             bookingId: id,
             recipientId: existing.bookerId,
-            templateKey: 'BOOKING_MODIFIED',
-            payload: { bookingId: id, venueName: existing.venue.name },
+            templateKey: "BOOKING_MODIFIED",
+            payload: { bookingId: id, venueName: targetVenue.name },
           },
         });
       }
 
       await tx.auditLog.create({
         data: {
-          entityType: 'booking',
+          entityType: "booking",
           entityId: id,
-          action: 'MODIFY_BOOKING',
+          action: "BOOKING_MODIFIED",
           actorId,
           metadata: {
             previousStatus: existing.status,
-            newStatus: nextStatus,
+            newStatus: workingStatus,
             slotChanged: isSlotChanged,
           },
         },
       });
 
-      return await tx.booking.findUnique({
+      return tx.booking.findUnique({
         where: { id },
-        include: {
-          venue: true,
-          booker: { select: { id: true, name: true } },
-        },
+        include: bookingInclude,
       });
     });
 
     return res.status(200).json(formatBookingDTO(result));
   } catch (error) {
-    if (error.status) return res.status(error.status).json({ error: error.message });
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     if (isExclusionViolation(error)) {
-      return res.status(409).json({ error: 'The requested slot is already booked for this venue.' });
+      return res.status(409).json({
+        error: "The requested slot is already booked for this venue.",
+      });
     }
     next(error);
   }
-};
+}
 
-/**
- * CANCEL a booking
- * PATCH /api/bookings/:id/cancel
- */
-export const cancelBooking = async (req, res, next) => {
+/** PATCH /api/bookings/:id/cancel — cancel booking and release slot. */
+export async function cancelBooking(req, res, next) {
   try {
     const { id } = req.params;
     const actorId = req.user.id;
@@ -318,41 +347,48 @@ export const cancelBooking = async (req, res, next) => {
     const result = await prisma.$transaction(async (tx) => {
       const existing = await tx.booking.findUnique({ where: { id } });
 
-      if (!existing) throw { status: 404, message: 'Booking not found' };
-
-      if (req.user.role !== 'ADMIN' && existing.bookerId !== actorId) {
-        throw { status: 403, message: 'Forbidden: Cannot cancel another user booking' };
+      if (!existing) {
+        throw { status: 404, message: "Booking not found" };
       }
 
-      if (['COMPLETED', 'CANCELLED', 'REJECTED'].includes(existing.status)) {
-        throw { status: 400, message: 'Booking is already closed or terminal' };
+      if (req.user.role !== Role.ADMIN && existing.bookerId !== actorId) {
+        throw {
+          status: 403,
+          message: "Forbidden: Cannot cancel another user booking",
+        };
       }
+
+      if (TERMINAL_STATUSES.includes(existing.status)) {
+        throw { status: 400, message: "Booking is already closed or terminal" };
+      }
+
+      assertTransition(existing.status, BookingStatus.CANCELLED);
 
       const cancelled = await tx.booking.update({
         where: { id },
-        data: { status: 'CANCELLED' },
-        include: {
-          venue: true,
-          booker: { select: { id: true, name: true } },
-        },
+        data: { status: BookingStatus.CANCELLED },
+        include: bookingInclude,
       });
 
       await tx.notificationOutbox.create({
         data: {
           bookingId: id,
           recipientId: existing.bookerId,
-          templateKey: 'BOOKING_CANCELLED',
+          templateKey: "BOOKING_CANCELLED",
           payload: { bookingId: id },
         },
       });
 
       await tx.auditLog.create({
         data: {
-          entityType: 'booking',
+          entityType: "booking",
           entityId: id,
-          action: 'CANCEL_BOOKING',
+          action: "BOOKING_CANCELLED",
           actorId,
-          metadata: { previousStatus: existing.status, newStatus: 'CANCELLED' },
+          metadata: {
+            previousStatus: existing.status,
+            newStatus: BookingStatus.CANCELLED,
+          },
         },
       });
 
@@ -361,15 +397,9 @@ export const cancelBooking = async (req, res, next) => {
 
     return res.status(200).json(formatBookingDTO(result));
   } catch (error) {
-    if (error.status) return res.status(error.status).json({ error: error.message });
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
     next(error);
   }
-};
-
-export default {
-  createBooking,
-  getBookings,
-  getBookingById,
-  updateBooking,
-  cancelBooking,
-};
+}

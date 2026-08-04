@@ -1,24 +1,25 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from "../lib/prisma.js";
+import { Role } from "../../../shared/index.js";
 
-const prisma = new PrismaClient();
-
-// Allowed institutional email domain (US-B1)
-const ALLOWED_DOMAIN = 'iiml.ac.in';
+const ALLOWED_DOMAIN = "iiml.ac.in";
 
 /**
- * T2-P2: Middleware to authenticate requests via Session Token / Authorization Header.
- * Verifies domain server-side and attaches user and role from the DB to req.user.
+ * Authenticate requests via session token (user id) in Authorization header
+ * or x-session-token. Roles are always read from the database.
  */
-export const authenticateUser = async (req, res, next) => {
+export async function authenticate(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
-    const sessionToken = req.headers['x-session-token'] || (authHeader && authHeader.split(' ')[1]);
+    const sessionToken =
+      req.headers["x-session-token"] ||
+      (authHeader && authHeader.split(" ")[1]);
 
     if (!sessionToken) {
-      return res.status(401).json({ error: 'Authentication required. No session token provided.' });
+      return res
+        .status(401)
+        .json({ error: "Authentication required. No session token provided." });
     }
 
-    // Lookup user directly in DB to resolve current state and role
     const user = await prisma.user.findUnique({
       where: { id: sessionToken },
       select: {
@@ -26,51 +27,48 @@ export const authenticateUser = async (req, res, next) => {
         email: true,
         role: true,
         name: true,
+        approverTier: true,
       },
     });
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid or expired session token.' });
+      return res
+        .status(401)
+        .json({ error: "Invalid or expired session token." });
     }
 
-    // SERVER-SIDE domain validation (Guardrail: Do not trust client-side hints)
-    const emailDomain = user.email.split('@')[1];
+    const emailDomain = user.email.split("@")[1];
     if (emailDomain !== ALLOWED_DOMAIN) {
-      return res.status(403).json({ 
-        error: `Access restricted to institutional accounts (@${ALLOWED_DOMAIN}) only.` 
+      return res.status(403).json({
+        error: `Access restricted to institutional accounts (@${ALLOWED_DOMAIN}) only.`,
       });
     }
 
-    // Attach verified user to request
     req.user = user;
     next();
   } catch (error) {
-    console.error('Auth Middleware Error:', error);
-    return res.status(500).json({ error: 'Internal server authentication error.' });
+    console.error("Auth Middleware Error:", error);
+    return res
+      .status(500)
+      .json({ error: "Internal server authentication error." });
   }
-};
+}
 
-/**
- * T2-P2 & T2-P3: Role-Based Access Control (RBAC) Middleware Generator.
- * Enforces authorization policies on protected endpoints.
- */
-export const requireRole = (allowedRoles = []) => {
+/** RBAC middleware — allowedRoles must be Role enum values from shared/. */
+export function requireRole(allowedRoles = []) {
   return (req, res, next) => {
     if (!req.user) {
-      return res.status(401).json({ error: 'User not authenticated.' });
+      return res.status(401).json({ error: "User not authenticated." });
     }
 
     if (!allowedRoles.includes(req.user.role)) {
-      return res.status(403).json({ 
-        error: 'Forbidden: You do not have permission to access this resource.' 
+      return res.status(403).json({
+        error: "Forbidden: You do not have permission to access this resource.",
       });
     }
 
     next();
   };
-};
+}
 
-/**
- * Helper shortcut for Admin-only routes (US-A3, US-B2, US-C1, US-C5)
- */
-export const requireAdmin = requireRole(['Admin']);
+export const requireAdmin = requireRole([Role.ADMIN]);
