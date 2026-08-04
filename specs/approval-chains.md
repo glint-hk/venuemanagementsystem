@@ -1,39 +1,38 @@
-# SPEC: approval-chains — per-venue-type approval design (data-gathering)
-
-> Not a feature spec. This captures the real approval hierarchy per venue
-> type before US-C1 (configurable chains) and US-C3 (escalation/delegation)
-> are built. TODO items must come from stakeholder input — never guessed.
+# SPEC: approval-chains — per-venue-type approval design
 
 ## Intent
-Give Team 3 (and Team 1, who seeds `approval_chains`) the real, stakeholder-confirmed approver order, escalation window, and delegation rules for every venue type, so seeded chain data reflects how IIML actually approves bookings.
+Define the real approver order per venue type, sourced from stakeholder consultation, so `approval_chains` seed data and the routing engine (US-C2) reflect how IIML actually approves venue bookings.
 
 ## Inputs / Outputs
-Input: interviews with the Registrar's office and whoever currently approves venue requests today.
-Output: one completed row per venue type below (matching `venues.type` in `specs/venue-registry.md`), each with its ordered approver tiers, escalation window, and delegation policy.
+Input: stakeholder consultations with the Cultural Secretary, the Infrastructure Secretary, the Dance Club's Operations Coordinator, and a former Infrastructure Secretary.
+Output: one `approval_chains` row per venue type, each with its ordered tiers and escalation window.
 
 ## Rules
 - Each venue type maps to exactly one `approval_chains` row (`shared/entities.js` — `steps: Array<{ tier, role: 'APPROVER', escalationWindowHours }>`).
-- Tiers are ordered lowest-first; tier 1 always acts before tier 2, etc. (enforced by US-C2, defined here).
-- Every tier's `escalationWindowHours` must be a real, confirmed number — not a round-number guess.
-- Grounds / multi-team spaces must state explicitly whether they use plain sequential approval or the multi-team coordination workflow noted below.
+- Tiers are ordered lowest-first; tier 1 always acts before tier 2, etc. (enforced by US-C2).
+- Estate-managed venues additionally require an Event Approval Document (EAD), submitted at least 15 days before the event, before a request enters the chain.
+- Overlapping requests for the same venue and slot are resolved first-come-first-served by default. The chain's own approvers (or an Admin) may override FCFS in favor of a flagship institute event or an event involving an important guest; the override reason is recorded in the audit log.
 
 ## Edge cases that must be handled
-- **Multi-team scheduling conflicts on shared grounds**: TODO — confirm with stakeholders whether this is a variant of sequential approval (e.g. an added coordination tier) or a genuinely different, non-approval workflow. Do not assume; this changes what US-C1/US-C2 need to support.
-- **A venue type with no confirmed chain yet**: must block that venue type from being bookable (US-A4) rather than defaulting to an empty or assumed chain.
-- **Per-tier delegation rules that differ** (e.g. tier 1 allows delegation, tier 2 requires a named backup): capture per-tier, not as one blanket policy, if that's how it actually works.
+- A venue type with no confirmed chain must block that venue type from being bookable (US-A4) rather than defaulting to an empty chain.
+- Shared/multi-team venues (e.g. grounds) use the same chain as their venue type. Conflicts between competing requests for the same slot are resolved by the FCFS/override rule above, not a separate coordination workflow.
 
 ## Out of scope
-The venue catalogue itself (`specs/venue-registry.md`). The routing engine that reads this data at runtime (US-C2, already specced). The chain-editing UI (US-C1).
+The venue catalogue itself (`specs/venue-registry.md`). The routing engine that reads this data at runtime (US-C2). The chain-editing UI (US-C1). Escalation and delegation behavior (US-C3) — chains below carry an escalation window value for schema completeness, but no escalation or delegation logic is built against it in this iteration.
 
 ## Done when
-Every venue type used in `specs/venue-registry.md` has a matching row below with no remaining TODO, the multi-team coordination question is resolved (not just flagged), and the Architect has reviewed it before `approval_chains` is seeded.
+Every venue type in `specs/venue-registry.md` has a matching row below, and `approval_chains` is seeded from this table.
 
 ---
 
-## TODO: Approval chains by venue type
+## Approval chains by venue type
 
-| Venue type | Tier 1 role | Tier 2 role | Tier N... | Escalation window (hrs) | Delegation rules | Multi-team coordination needed? |
-|---|---|---|---|---|---|---|
-| TODO | TODO | TODO | TODO | TODO | TODO | TODO |
+| Venue type | Tier 1 | Tier 2 | Tier 3 | Tier 4 | Escalation window (hrs) |
+|---|---|---|---|---|---|
+| Estate-managed (Aryabhatta, GNB Circle, MV Circle, Samanjasya, Utsav, and other major event venues, including shared grounds) | Student Affairs Office | Student Affairs Chair | Dean (Infrastructure) | Director | 48 |
+| Hostel common rooms / common spaces | Infrastructure Secretary | — | — | — | 48 |
+| Academic classrooms | PGP Office | — | — | — | 48 |
 
-*(Add one row per venue type. Leave every cell as TODO until stakeholder-confirmed.)*
+Chains are stored as an ordered list of `{ tier, role: 'APPROVER', escalationWindowHours }` — the office names above are for seeding and reading the data; a step is addressed by tier number at runtime.
+
+Users are assigned to a chain step via `users.approverTier` matching the step's `tier`.
