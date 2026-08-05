@@ -1,0 +1,31 @@
+$kind: http-request
+name: Update Venue
+method: PATCH
+url: '{{baseUrl}}/venues/{{venueId}}'
+order: 4000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{adminToken}}'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "capacity": 120
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response capacity equals 120", function () {
+        const json = pm.response.json();
+        pm.expect(json.capacity).to.eql(120);
+      });

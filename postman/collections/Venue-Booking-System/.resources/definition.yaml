@@ -1,0 +1,6 @@
+$kind: collection
+name: Venue Booking System
+description: |-
+  Complete API test suite for the IIML Venue Booking System.
+  Base URL: {{baseUrl}}
+  Auth: Use {{authToken}} (set by the Login request).

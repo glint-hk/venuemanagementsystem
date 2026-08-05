@@ -1,0 +1,42 @@
+$kind: http-request
+name: Create Venue Block
+method: POST
+url: '{{baseUrl}}/admin/venues/{{venueId}}/blocks'
+order: 1000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{adminToken}}'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "reason": "Maintenance",
+      "timeslot": {
+        "startAt": "2026-09-20T08:00:00Z",
+        "endAt": "2026-09-20T18:00:00Z"
+      }
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 201", function () {
+        pm.response.to.have.status(201);
+      });
+
+      pm.test("Response has id, reason, timeslot fields", function () {
+        const json = pm.response.json();
+        pm.expect(json).to.have.property("id");
+        pm.expect(json).to.have.property("reason");
+        pm.expect(json).to.have.property("timeslot");
+      });
+
+      const json = pm.response.json();
+      if (json.id) {
+        pm.environment.set("blockId", json.id);
+      }

@@ -1,0 +1,51 @@
+$kind: http-request
+name: Create Booking
+method: POST
+url: '{{baseUrl}}/bookings'
+order: 1000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{authToken}}'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "venueId": "{{venueId}}",
+      "purpose": "Team meeting for project review",
+      "timeslot": {
+        "startAt": "2026-09-15T10:00:00Z",
+        "endAt": "2026-09-15T12:00:00Z"
+      }
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 201", function () {
+        pm.response.to.have.status(201);
+      });
+
+      pm.test("Response has id, status, venue, booker, purpose, timeslot fields", function () {
+        const json = pm.response.json();
+        pm.expect(json).to.have.property("id");
+        pm.expect(json).to.have.property("status");
+        pm.expect(json).to.have.property("venue");
+        pm.expect(json).to.have.property("booker");
+        pm.expect(json).to.have.property("purpose");
+        pm.expect(json).to.have.property("timeslot");
+      });
+
+      pm.test("status equals DRAFT or PENDING", function () {
+        const json = pm.response.json();
+        pm.expect(["DRAFT", "PENDING"]).to.include(json.status);
+      });
+
+      const json = pm.response.json();
+      if (json.id) {
+        pm.environment.set("bookingId", json.id);
+      }

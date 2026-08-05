@@ -1,0 +1,28 @@
+$kind: http-request
+name: Get Venue By Id
+method: GET
+url: '{{baseUrl}}/venues/{{venueId}}'
+order: 2000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{authToken}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response id matches venueId variable", function () {
+        const json = pm.response.json();
+        pm.expect(json.id).to.eql(pm.environment.get("venueId"));
+      });
+
+      pm.test("Response has name, capacity fields", function () {
+        const json = pm.response.json();
+        pm.expect(json).to.have.property("name");
+        pm.expect(json).to.have.property("capacity");
+      });
