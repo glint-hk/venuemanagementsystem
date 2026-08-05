@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { fetchVenues, fetchUsers, fetchAuditLogs } from "../lib/apiClient.js";
 import Layout from "../components/Layout.jsx";
-import { Card, Badge, Spinner } from "../components/ui/index.js";
+import { Card, Spinner } from "../components/ui/index.js";
 
 export default function AdminOverviewPage() {
   const [venues, setVenues] = useState([]);

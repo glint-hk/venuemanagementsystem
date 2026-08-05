@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchVenues, createBooking, fetchVenueAvailability } from "../lib/apiClient.js";
 import Layout from "../components/Layout.jsx";
-import { Button, Card, Badge, Modal, Spinner } from "../components/ui/index.js";
+import { Button, Card, Modal, Spinner } from "../components/ui/index.js";
 
 export default function SearchPage() {
   const navigate = useNavigate();

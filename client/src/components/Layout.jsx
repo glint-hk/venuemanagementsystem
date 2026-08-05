@@ -14,8 +14,6 @@ const NAV_ITEMS = {
     { to: "/approvals", label: "Approvals", icon: "✅" },
   ],
   ADMIN: [
-    { to: "/dashboard", label: "My Bookings", icon: "📋" },
-    { to: "/search", label: "Search Venues", icon: "🔍" },
     { to: "/admin/venues", label: "Venue Management", icon: "✅" },
     { to: "/admin", label: "Admin", icon: "⚙️" },
     { to: "/admin/users", label: "Users", icon: "👥" },

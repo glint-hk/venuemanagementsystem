@@ -530,7 +530,7 @@ export default function AdminVenuesPage() {
                 className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50"
               />
               {chainEditing !== "new" && (
-                <p className="text-xs text-blue-300/50 mt-1">Venue type can't be changed after creation.</p>
+                <p className="text-xs text-blue-300/50 mt-1">Venue type can&apos;t be changed after creation.</p>
               )}
             </div>
 
@@ -604,7 +604,7 @@ export default function AdminVenuesPage() {
                         {tierApprovers.length === 0 && (
                           <p className="text-[11px] text-amber-300/70 pl-[4.5rem]">
                             No users are set as Tier {step.tier} approvers yet — assign one from User
-                            Management first, or leave this on "Any approver".
+                            Management first, or leave this on &ldquo;Any approver&rdquo;.
                           </p>
                         )}
                       </div>
