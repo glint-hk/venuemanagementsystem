@@ -1,6 +1,6 @@
-// Prisma client singleton — imported by controllers.
-// See README.md "Server layering" and AGENTS.md conventions.
-import { PrismaClient } from "@prisma/client";
+import pkg from '@prisma/client';
+
+const { PrismaClient } = pkg;
 
 const prisma = new PrismaClient();
 

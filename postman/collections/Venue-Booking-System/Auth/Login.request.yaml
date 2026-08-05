@@ -1,0 +1,43 @@
+$kind: http-request
+name: Login
+method: POST
+url: '{{baseUrl}}/auth/login'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "email": "{{bookerEmail}}",
+      "name": "Test Booker"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response has token and user fields", function () {
+        const json = pm.response.json();
+        pm.expect(json).to.have.property("token");
+        pm.expect(json).to.have.property("user");
+      });
+
+      pm.test("user.role equals BOOKER", function () {
+        const json = pm.response.json();
+        pm.expect(json.user.role).to.eql("BOOKER");
+      });
+
+      pm.test("user.email matches bookerEmail", function () {
+        const json = pm.response.json();
+        pm.expect(json.user.email).to.eql(pm.environment.get("bookerEmail"));
+      });
+
+      const json = pm.response.json();
+      if (json.token) {
+        pm.environment.set("authToken", json.token);
+      }

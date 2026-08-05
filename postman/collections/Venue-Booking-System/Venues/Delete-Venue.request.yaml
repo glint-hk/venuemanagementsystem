@@ -1,0 +1,26 @@
+$kind: http-request
+name: Delete Venue
+method: DELETE
+url: '{{baseUrl}}/venues/{{venueId}}'
+order: 5000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{adminToken}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200 or 204", function () {
+        pm.expect([200, 204]).to.include(pm.response.code);
+      });
+
+      pm.test("Response confirms deletion", function () {
+        if (pm.response.code === 200) {
+          const json = pm.response.json();
+          pm.expect(json).to.exist;
+        } else {
+          pm.expect(pm.response.code).to.eql(204);
+        }
+      });

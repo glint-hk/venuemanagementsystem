@@ -1,0 +1,39 @@
+$kind: http-request
+name: Get Availability
+method: GET
+url: "{{baseUrl}}/public/availability?venueId={{venueId}}&from=2026-07-01T00:00:00Z&to=2026-07-02T00:00:00Z"
+order: 1000
+queryParams:
+  - key: venueId
+    value: "{{venueId}}"
+    disabled: false
+    description: ""
+  - key: from
+    value: 2026-07-01T00:00:00Z
+    disabled: false
+    description: ""
+  - key: to
+    value: 2026-07-02T00:00:00Z
+    disabled: false
+    description: ""
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test("Status is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response is an array", function () {
+        const json = pm.response.json();
+        pm.expect(json).to.be.an("array");
+      });
+
+      pm.test("Each item has venueId, timeslot, busy fields", function () {
+        const json = pm.response.json();
+        json.forEach(function (item) {
+          pm.expect(item).to.have.property("venueId");
+          pm.expect(item).to.have.property("timeslot");
+          pm.expect(item).to.have.property("busy");
+        });
+      });
+    language: text/javascript

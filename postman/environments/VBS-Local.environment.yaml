@@ -1,0 +1,34 @@
+name: VBS-Local
+values:
+  - key: baseUrl
+    value: 'http://localhost:5000/api'
+    enabled: true
+    type: default
+  - key: authToken
+    value: ''
+    enabled: true
+    type: default
+  - key: adminToken
+    value: ''
+    enabled: true
+    type: default
+  - key: bookerEmail
+    value: 'booker@iiml.ac.in'
+    enabled: true
+    type: default
+  - key: adminEmail
+    value: 'admin@iiml.ac.in'
+    enabled: true
+    type: default
+  - key: venueId
+    value: ''
+    enabled: true
+    type: default
+  - key: bookingId
+    value: ''
+    enabled: true
+    type: default
+  - key: blockId
+    value: ''
+    enabled: true
+    type: default

@@ -9,15 +9,15 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:4000",
+        target: "http://localhost:8000",
         changeOrigin: true,
       },
       "/auth": {
-        target: "http://localhost:4000",
+        target: "http://localhost:8000",
         changeOrigin: true,
       },
       "/public": {
-        target: "http://localhost:4000",
+        target: "http://localhost:8000",
         changeOrigin: true,
       },
     },

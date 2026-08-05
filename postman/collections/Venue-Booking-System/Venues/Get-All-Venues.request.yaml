@@ -1,0 +1,30 @@
+$kind: http-request
+name: Get All Venues
+method: GET
+url: '{{baseUrl}}/venues'
+order: 1000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{authToken}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response is an array", function () {
+        const json = pm.response.json();
+        pm.expect(json).to.be.an("array");
+      });
+
+      pm.test("Each venue has id, name fields", function () {
+        const json = pm.response.json();
+        json.forEach(function (venue) {
+          pm.expect(venue).to.have.property("id");
+          pm.expect(venue).to.have.property("name");
+        });
+      });

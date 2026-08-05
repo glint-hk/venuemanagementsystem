@@ -1,95 +1,100 @@
 // API client — centralised fetch wrapper for all server calls.
 // Uses relative URLs so the Vite proxy handles routing in dev.
 
-const API_BASE = "/api";
-const AUTH_BASE = "/auth";
-const PUBLIC_BASE = "/public";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const API_BASE = `${BASE_URL}/api`;
+const AUTH_BASE = `${BASE_URL}/auth`;
 
+const TOKEN_KEY = "authToken";
+const USER_KEY = "authUser";
+ 
 function getHeaders() {
   const headers = { "Content-Type": "application/json" };
-  const token = localStorage.getItem("accessToken");
+  const token = localStorage.getItem(TOKEN_KEY);
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
 }
-
+ 
 async function request(url, options = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: { ...getHeaders(), ...options.headers },
-  });
-
-  if (res.status === 401) {
-    const data = await res.json().catch(() => ({}));
-    if (data.code === "TOKEN_EXPIRED") {
-      // Attempt token refresh
-      const refreshed = await refreshToken();
-      if (refreshed) {
-        // Retry original request with new token
-        return fetch(url, {
-          ...options,
-          headers: { ...getHeaders(), ...options.headers },
-        }).then(handleResponse);
-      }
+  const isAuthLogin = url.includes("/auth/login");
+  let res;
+  
+  try {
+    res = await fetch(url, {
+      ...options,
+      headers: { ...getHeaders(), ...options.headers },
+    });
+  } catch (netErr) {
+    console.error("Network fetch error:", netErr);
+    throw new Error("Unable to connect to backend server. Please verify the server is running.");
+  }
+ 
+  // Intercept 401 for authenticated session expiry ONLY (not for login endpoint)
+  if (res.status === 401 && !isAuthLogin) {
+    clearSession();
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
     }
-    // Clear auth and redirect to login
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
-    window.location.href = "/login";
     throw new Error("Authentication required");
   }
-
+ 
   return handleResponse(res);
 }
-
+ 
 async function handleResponse(res) {
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    const error = new Error(data?.error || `Request failed: ${res.status}`);
+    const error = new Error(data?.error || `Request failed with status ${res.status}`);
     error.status = res.status;
     error.data = data;
     throw error;
   }
   return data;
 }
-
-async function refreshToken() {
-  const refresh = localStorage.getItem("refreshToken");
-  if (!refresh) return false;
-
+ 
+function storeSession(token, user) {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+ 
+function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+ 
+export function getStoredUser() {
   try {
-    const res = await fetch(`${AUTH_BASE}/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken: refresh }),
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    localStorage.setItem("accessToken", data.accessToken);
-    localStorage.setItem("refreshToken", data.refreshToken);
-    return true;
+    const raw = localStorage.getItem(USER_KEY);
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    return false;
+    return null;
   }
 }
-
+ 
 // ── Auth ──
-export async function login(email, name) {
+async function performLogin(body) {
   const data = await request(`${AUTH_BASE}/login`, {
     method: "POST",
-    body: JSON.stringify({ email, name }),
+    body: JSON.stringify(body),
   });
-  localStorage.setItem("accessToken", data.accessToken);
-  localStorage.setItem("refreshToken", data.refreshToken);
+  if (data?.token && data?.user) {
+    storeSession(data.token, data.user);
+  }
   return data;
 }
-
-export async function fetchMe() {
-  return request(`${AUTH_BASE}/me`);
+ 
+export async function login(email, name) {
+  const sanitizedEmail = email ? String(email).trim().toLowerCase() : "";
+  const sanitizedName = name ? String(name).trim() : "";
+  return performLogin({ email: sanitizedEmail, name: sanitizedName });
 }
-
+ 
+export async function loginWithGoogle(idToken) {
+  return performLogin({ idToken });
+}
+ 
 export function logout() {
-  localStorage.removeItem("accessToken");
-  localStorage.removeItem("refreshToken");
+  clearSession();
 }
 
 // ── Venues ──
@@ -106,9 +111,29 @@ export async function fetchVenue(venueId) {
   return request(`${API_BASE}/venues/${venueId}`);
 }
 
-export async function fetchVenueAvailability(venueId, startDate, endDate) {
-  const params = new URLSearchParams({ startDate, endDate });
+export async function fetchVenueAvailability(venueId, startAt, endAt) {
+  const params = new URLSearchParams({ startAt, endAt });
   return request(`${API_BASE}/venues/${venueId}/availability?${params}`);
+}
+
+export async function createVenue(data) {
+  return request(`${API_BASE}/venues`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateVenue(venueId, data) {
+  return request(`${API_BASE}/venues/${venueId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteVenue(venueId) {
+  return request(`${API_BASE}/venues/${venueId}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Bookings ──
@@ -135,12 +160,14 @@ export async function modifyBooking(bookingId, data) {
 }
 
 export async function cancelBooking(bookingId) {
-  return request(`${API_BASE}/bookings/${bookingId}`, { method: "DELETE" });
+  return request(`${API_BASE}/bookings/${bookingId}/cancel`, {
+    method: "PATCH",
+  });
 }
 
 // ── Approvals ──
 export async function fetchPendingApprovals() {
-  return request(`${API_BASE}/bookings/pending-approvals`);
+  return request(`${API_BASE}/bookings/approvals`);
 }
 
 export async function submitApprovalDecision(bookingId, decision, comment) {
@@ -156,21 +183,46 @@ export async function fetchUsers() {
 }
 
 export async function elevateRole(userId, role, approverTier) {
-  return request(`${API_BASE}/admin/users/${userId}/role`, {
+  return request(`${AUTH_BASE}/roles/elevate`, {
     method: "PATCH",
-    body: JSON.stringify({ role, approverTier }),
+    body: JSON.stringify({ userId, role, approverTier }),
   });
 }
 
 export async function fetchAuditLogs() {
-  return request(`${API_BASE}/admin/audit-logs`);
+  return request(`${API_BASE}/admin/logs`);
+}
+
+export async function fetchApprovalChains() {
+  return request(`${API_BASE}/admin/approval-chains`);
+}
+
+export async function createApprovalChain(data) {
+  return request(`${API_BASE}/admin/approval-chains`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateApprovalChain(chainId, data) {
+  return request(`${API_BASE}/admin/approval-chains/${chainId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
 }
 
 // ── Public ──
-export async function fetchPublicAvailability(startDate, endDate, venueId) {
-  const params = new URLSearchParams({ startDate, endDate });
+export async function fetchPublicAvailability(startAt, endAt, venueId) {
+  const params = new URLSearchParams();
+  if (startAt) params.set("startAt", startAt);
+  if (endAt) params.set("endAt", endAt);
   if (venueId) params.set("venueId", venueId);
-  // No auth header for public endpoint
-  const res = await fetch(`${PUBLIC_BASE}/availability?${params}`);
-  return handleResponse(res);
+  const qs = params.toString();
+  try {
+    const res = await fetch(`${API_BASE}/public/availability${qs ? `?${qs}` : ""}`);
+    return await handleResponse(res);
+  } catch (err) {
+    console.error("Public availability fetch error:", err);
+    throw new Error("Unable to connect to backend server. Please verify the server is running.");
+  }
 }

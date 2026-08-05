@@ -1,0 +1,17 @@
+$kind: http-request
+name: Remove Venue Block
+method: DELETE
+url: '{{baseUrl}}/admin/blocks/{{blockId}}'
+order: 2000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{adminToken}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200 or 204", function () {
+        pm.expect([200, 204]).to.include(pm.response.code);
+      });

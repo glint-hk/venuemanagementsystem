@@ -1,0 +1,46 @@
+$kind: http-request
+name: Create Venue
+method: POST
+url: '{{baseUrl}}/venues'
+order: 3000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{adminToken}}'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "name": "Seminar Hall A",
+      "capacity": 100,
+      "location": "Academic Block, Floor 2",
+      "amenities": ["projector", "whiteboard", "AC"]
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 201", function () {
+        pm.response.to.have.status(201);
+      });
+
+      pm.test("Response has id, name, capacity fields", function () {
+        const json = pm.response.json();
+        pm.expect(json).to.have.property("id");
+        pm.expect(json).to.have.property("name");
+        pm.expect(json).to.have.property("capacity");
+      });
+
+      pm.test("name equals Seminar Hall A", function () {
+        const json = pm.response.json();
+        pm.expect(json.name).to.eql("Seminar Hall A");
+      });
+
+      const json = pm.response.json();
+      if (json.id) {
+        pm.environment.set("venueId", json.id);
+      }

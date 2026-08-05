@@ -1,0 +1,32 @@
+$kind: http-request
+name: Get All Bookings
+method: GET
+url: '{{baseUrl}}/bookings'
+order: 2000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{authToken}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response is an array", function () {
+        const json = pm.response.json();
+        pm.expect(json).to.be.an("array");
+      });
+
+      pm.test("Each booking has id, status, venue, booker fields", function () {
+        const json = pm.response.json();
+        json.forEach(function (booking) {
+          pm.expect(booking).to.have.property("id");
+          pm.expect(booking).to.have.property("status");
+          pm.expect(booking).to.have.property("venue");
+          pm.expect(booking).to.have.property("booker");
+        });
+      });

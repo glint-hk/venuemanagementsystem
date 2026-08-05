@@ -1,0 +1,22 @@
+$kind: http-request
+name: Cancel Booking
+method: PATCH
+url: '{{baseUrl}}/bookings/{{bookingId}}/cancel'
+order: 5000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{authToken}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response status equals CANCELLED", function () {
+        const json = pm.response.json();
+        pm.expect(json.status).to.eql("CANCELLED");
+      });

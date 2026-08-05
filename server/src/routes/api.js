@@ -1,46 +1,91 @@
 import { Router } from "express";
-import { authenticate, requireRole } from "../middleware/auth.js";
-import { listVenues, getVenue, getVenueAvailability } from "../controllers/venue.js";
-import {
-  createBooking,
-  getBookings,
-  getBookingById,
-  updateBooking,
-  cancelBooking,
-} from "../controllers/bookingController.js";
-import { pendingApprovals, approveBooking } from "../controllers/approvalController.js";
-import { listUsers, elevateRole, listAuditLogs } from "../controllers/admin.js";
+import { authenticate, requireAdmin } from "../middleware/authMiddleware.js";
 
-// All authenticated routes, role/scope-gated via server/src/middleware/auth.js.
-// Mounted here by resource area as controllers land — see README.md
-// "Team ownership map" for who owns which resource.
+import * as bookingController from "../controllers/bookingController.js";
+import * as venueController from "../controllers/venueController.js";
+import * as adminController from "../controllers/adminController.js";
+import { pendingApprovals, approveBooking } from "../controllers/approvalController.js";
+
 const router = Router();
 
-// All /api routes require authentication
-router.use(authenticate);
 
-// ── Venues (Team 1 / Team 2 read path) ──
-router.get("/venues", listVenues);
-router.get("/venues/:venueId", getVenue);
-router.get("/venues/:venueId/availability", getVenueAvailability);
+// ==========================================
+// ADMIN CONSOLE (US-A4 / US-A5)
+// ==========================================
+router.post(
+  "/admin/venues/:id/blocks",
+  authenticate,
+  requireAdmin,
+  adminController.createVenueBlock
+);
+router.delete(
+  "/admin/blocks/:blockId",
+  authenticate,
+  requireAdmin,
+  adminController.removeVenueBlock
+);
+router.get(
+  "/admin/metrics/utilization",
+  authenticate,
+  requireAdmin,
+  adminController.getUtilizationMetrics
+);
+router.get(
+  "/admin/users",
+  authenticate,
+  requireAdmin,
+  adminController.listUsers
+);
+router.get(
+  "/admin/logs",
+  authenticate,
+  requireAdmin,
+  adminController.listAuditLogs
+);
+router.get(
+  "/admin/approval-chains",
+  authenticate,
+  requireAdmin,
+  adminController.listApprovalChains
+);
+router.post(
+  "/admin/approval-chains",
+  authenticate,
+  requireAdmin,
+  adminController.createApprovalChain
+);
+router.patch(
+  "/admin/approval-chains/:id",
+  authenticate,
+  requireAdmin,
+  adminController.updateApprovalChain
+);
 
-// ── Bookings (Team 1 — US-A2) ──
-// NOTE: pending-approvals must be registered before the :bookingId param
-// route below, or Express would try to resolve "pending-approvals" as a
-// bookingId.
-router.post("/bookings", createBooking);
-router.get("/bookings", getBookings);
-router.get("/bookings/pending-approvals", pendingApprovals);
-router.get("/bookings/:bookingId", getBookingById);
-router.patch("/bookings/:bookingId", updateBooking);
-router.delete("/bookings/:bookingId", cancelBooking);
+// Specific booking routes before parameterized :id route
+router.get("/bookings/approvals", authenticate, pendingApprovals);
+router.post("/bookings/:bookingId/approve", authenticate, approveBooking);
 
-// ── Approvals (Team 3 — US-C2) ──
-router.post("/bookings/:bookingId/approve", approveBooking);
+// ==========================================
+// BOOKING LIFECYCLE (US-A2)
+// ==========================================
+router.post("/bookings", authenticate, bookingController.createBooking);
+router.get("/bookings", authenticate, bookingController.getBookings);
+router.get("/bookings/:id", authenticate, bookingController.getBookingById);
+router.patch("/bookings/:id", authenticate, bookingController.updateBooking);
+router.patch(
+  "/bookings/:id/cancel",
+  authenticate,
+  bookingController.cancelBooking
+);
 
-// ── Admin (Team 2 — US-B2) ──
-router.get("/admin/users", requireRole("ADMIN"), listUsers);
-router.patch("/admin/users/:userId/role", requireRole("ADMIN"), elevateRole);
-router.get("/admin/audit-logs", requireRole("ADMIN"), listAuditLogs);
+// ==========================================
+// VENUE REGISTRY (US-A3 / US-A4)
+// ==========================================
+router.get("/venues", authenticate, venueController.getAllVenues);
+router.get("/venues/:id", authenticate, venueController.getVenueById);
+router.post("/venues", authenticate, requireAdmin, venueController.createVenue);
+router.patch("/venues/:id", authenticate, requireAdmin, venueController.patchVenue);
+router.delete("/venues/:id", authenticate, requireAdmin, venueController.deleteVenue);
+router.get("/venues/:id/availability", authenticate, venueController.getVenueAvailability);
 
 export default router;

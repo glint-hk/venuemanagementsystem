@@ -1,0 +1,41 @@
+$kind: http-request
+name: Update Booking
+method: PUT
+url: '{{baseUrl}}/bookings/{{bookingId}}'
+order: 4000
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{authToken}}'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "purpose": "Updated: Team meeting for project review",
+      "timeslot": {
+        "startAt": "2026-09-15T14:00:00Z",
+        "endAt": "2026-09-15T16:00:00Z"
+      }
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response purpose matches updated value", function () {
+        const json = pm.response.json();
+        pm.expect(json.purpose).to.eql("Updated: Team meeting for project review");
+      });
+
+      pm.test("status is a valid BookingStatus", function () {
+        const json = pm.response.json();
+        const validStatuses = ["DRAFT", "PENDING", "APPROVED", "REJECTED", "MODIFIED", "COMPLETED", "CANCELLED"];
+        pm.expect(validStatuses).to.include(json.status);
+      });
