@@ -8,6 +8,7 @@
     "server": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "vitest run",
+    "lint": "eslint .",
     "postinstall": "prisma generate --schema=./prisma/schema.prisma"
   },
   "dependencies": {

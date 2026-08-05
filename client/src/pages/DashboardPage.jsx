@@ -1,64 +1,27 @@
 import { useState, useEffect } from "react";
-import {
-  fetchVenues,
-  createVenue,
-  updateVenue,
-  deleteVenue,
-  fetchApprovalChains,
-  createApprovalChain,
-  updateApprovalChain,
-  fetchUsers,
-} from "../lib/apiClient.js";
+import { Link } from "react-router-dom";
+import { useAuth } from "../context/AuthContext.jsx";
+import { fetchMyBookings, cancelBooking, modifyBooking, fetchVenueAvailability } from "../lib/apiClient.js";
 import Layout from "../components/Layout.jsx";
-import { Button, Card, Modal, Spinner } from "../components/ui/index.js";
+import { Button, Card, Badge, Modal, Spinner } from "../components/ui/index.js";
 
-const MAX_APPROVAL_TIERS = 6;
-
-const EMPTY_FORM = {
-  name: "",
-  type: "",
-  location: "",
-  capacity: "",
-  attributes: "",
-  approvalChainId: "",
-};
-
-const emptyStep = (tier) => ({ tier, role: "APPROVER", escalationWindowHours: "24", assignedApproverId: "" });
-const EMPTY_CHAIN_FORM = { venueType: "", steps: [emptyStep(1)] };
-
-export default function AdminVenuesPage() {
-  const [venues, setVenues] = useState([]);
-  const [chains, setChains] = useState([]);
-  const [approvers, setApprovers] = useState([]);
+export default function DashboardPage() {
+  const { user } = useAuth();
+  const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [editingBooking, setEditingBooking] = useState(null);
+  const [editForm, setEditForm] = useState({ purpose: "", date: "", startTime: "", endTime: "" });
+  const [editError, setEditError] = useState("");
+  const [submittingEdit, setSubmittingEdit] = useState(false);
+  const [busySlots, setBusySlots] = useState([]); // [{startAt: Date, endAt: Date}] for the selected date
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
 
-  const [editing, setEditing] = useState(null); // venue object, or "new"
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [formError, setFormError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const [chainEditing, setChainEditing] = useState(null); // chain object, or "new"
-  const [chainForm, setChainForm] = useState(EMPTY_CHAIN_FORM);
-  const [chainFormError, setChainFormError] = useState("");
-  const [chainSubmitting, setChainSubmitting] = useState(false);
-
-  const load = async () => {
+  const loadBookings = async () => {
     try {
       setLoading(true);
-      setError("");
-      const [venuesData, chainsData, usersData] = await Promise.all([
-        fetchVenues(),
-        fetchApprovalChains().catch(() => []),
-        fetchUsers().catch(() => []),
-      ]);
-      // GET /api/venues wraps its payload as { venues: [...] }; guard against
-      // any other shape (or a partially-failed request) so this never crashes.
-      const venuesList = Array.isArray(venuesData) ? venuesData : venuesData?.venues;
-      setVenues(Array.isArray(venuesList) ? venuesList : []);
-      setChains(Array.isArray(chainsData) ? chainsData : []);
-      const usersList = Array.isArray(usersData) ? usersData : [];
-      setApprovers(usersList.filter((u) => u.role === "APPROVER"));
+      const data = await fetchMyBookings();
+      setBookings(data || []);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -67,567 +30,382 @@ export default function AdminVenuesPage() {
   };
 
   useEffect(() => {
-    load();
+    loadBookings();
   }, []);
 
-  const openCreate = () => {
-    setFormError("");
-    setForm(EMPTY_FORM);
-    setEditing("new");
-  };
-
-  const openEdit = (venue) => {
-    setFormError("");
-    setForm({
-      name: venue.name || "",
-      type: venue.type || "",
-      location: venue.location || "",
-      capacity: venue.capacity ?? "",
-      attributes: (venue.attributes || []).join(", "),
-      approvalChainId: venue.approvalChainId || "",
-    });
-    setEditing(venue);
-  };
-
-  const closeModal = () => {
-    setEditing(null);
-    setFormError("");
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setFormError("");
-
-    if (!form.name || !form.type || !form.location || form.capacity === "" || !form.approvalChainId) {
-      setFormError("Name, type, location, capacity, and approval chain are required.");
-      return;
-    }
-
-    const payload = {
-      name: form.name,
-      type: form.type,
-      location: form.location,
-      capacity: Number(form.capacity),
-      attributes: form.attributes
-        .split(",")
-        .map((a) => a.trim())
-        .filter(Boolean),
-      approvalChainId: form.approvalChainId,
-    };
-
-    setSubmitting(true);
+  const handleCancel = async (bookingId) => {
+    if (!window.confirm("Are you sure you want to cancel this booking?")) return;
     try {
-      if (editing === "new") {
-        await createVenue(payload);
-      } else {
-        await updateVenue(editing.id, payload);
-      }
-      closeModal();
-      load();
-    } catch (err) {
-      setFormError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleDelete = async (venue) => {
-    if (!window.confirm(`Delete "${venue.name}"? This cannot be undone.`)) return;
-    setError("");
-    try {
-      await deleteVenue(venue.id);
-      load();
+      await cancelBooking(bookingId);
+      loadBookings();
     } catch (err) {
       setError(err.message);
     }
   };
 
-  // ── Approval chains ──
-  const openCreateChain = () => {
-    setChainFormError("");
-    setChainForm(EMPTY_CHAIN_FORM);
-    setChainEditing("new");
-  };
+  const openModifyModal = (b) => {
+    setEditingBooking(b);
+    const startDateObj = new Date(b.timeslot.startAt);
+    const endDateObj = new Date(b.timeslot.endAt);
+    const dateStr = startDateObj.toISOString().slice(0, 10);
+    const startStr = startDateObj.toTimeString().slice(0, 5);
+    const endStr = endDateObj.toTimeString().slice(0, 5);
 
-  const openEditChain = (chain) => {
-    setChainFormError("");
-    setChainForm({
-      venueType: chain.venueType || "",
-      steps: Array.isArray(chain.steps)
-        ? chain.steps.map((s) => ({
-            tier: s.tier,
-            role: "APPROVER",
-            escalationWindowHours: String(s.escalationWindowHours ?? ""),
-            assignedApproverId: s.assignedApproverId || "",
-          }))
-        : [],
+    setEditForm({
+      purpose: b.purpose,
+      date: dateStr,
+      startTime: startStr,
+      endTime: endStr,
     });
-    setChainEditing(chain);
+    setEditError("");
+    setBusySlots([]);
   };
 
-  const closeChainModal = () => {
-    setChainEditing(null);
-    setChainFormError("");
-  };
+  // Same pattern as the create-booking modal in SearchPage.jsx: pull the
+  // venue's busy slots for the selected date so a reschedule can be flagged
+  // before submit, not just after a 409. Still a UX courtesy only — the
+  // database exclusion constraint is the real guarantee.
+  useEffect(() => {
+    if (!editingBooking || !editForm.date) {
+      setBusySlots([]);
+      return;
+    }
+    let cancelled = false;
+    const venueId = editingBooking.venue?.id;
+    if (!venueId) {
+      setBusySlots([]);
+      return;
+    }
+    const dayStart = new Date(`${editForm.date}T00:00:00`);
+    const dayEnd = new Date(`${editForm.date}T23:59:59`);
 
-  const addTier = () => {
-    setChainForm((prev) => {
-      if (prev.steps.length >= MAX_APPROVAL_TIERS) return prev;
-      return { ...prev, steps: [...prev.steps, emptyStep(prev.steps.length + 1)] };
-    });
-  };
+    setCheckingAvailability(true);
+    fetchVenueAvailability(venueId, dayStart.toISOString(), dayEnd.toISOString())
+      .then((slots) => {
+        if (cancelled) return;
+        const busy = (Array.isArray(slots) ? slots : [])
+          .filter((s) => s.busy)
+          .map((s) => ({ startAt: new Date(s.timeslot.startAt), endAt: new Date(s.timeslot.endAt) }));
+        setBusySlots(busy);
+      })
+      .catch(() => {
+        if (!cancelled) setBusySlots([]);
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingAvailability(false);
+      });
 
-  const removeTier = (index) => {
-    setChainForm((prev) => {
-      const steps = prev.steps
-        .filter((_, i) => i !== index)
-        .map((s, i) => {
-          const newTier = i + 1;
-          // Renumbering can shift a step onto a different tier — an
-          // approver assigned to the old tier number may no longer be
-          // valid, so clear the assignment rather than silently mismatch it.
-          return newTier === s.tier ? s : { ...s, tier: newTier, assignedApproverId: "" };
-        });
-      return { ...prev, steps };
-    });
-  };
+    return () => {
+      cancelled = true;
+    };
+  }, [editingBooking, editForm.date]);
 
-  const updateTierHours = (index, value) => {
-    setChainForm((prev) => ({
-      ...prev,
-      steps: prev.steps.map((s, i) => (i === index ? { ...s, escalationWindowHours: value } : s)),
-    }));
-  };
+  const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && bStart < aEnd;
+  const fmtSlotTime = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-  const updateTierApprover = (index, value) => {
-    setChainForm((prev) => ({
-      ...prev,
-      steps: prev.steps.map((s, i) => (i === index ? { ...s, assignedApproverId: value } : s)),
-    }));
-  };
+  // The busy slot (if any) the currently-entered start/end would collide
+  // with — excluding the booking's OWN current slot, since without that
+  // exclusion editing anything other than the time would always show a
+  // false conflict against itself.
+  const conflictingSlot = (() => {
+    if (!editingBooking || !editForm.date || !editForm.startTime || !editForm.endTime) return null;
+    const proposedStart = new Date(`${editForm.date}T${editForm.startTime}`);
+    const proposedEnd = new Date(`${editForm.date}T${editForm.endTime}`);
+    if (Number.isNaN(proposedStart.getTime()) || Number.isNaN(proposedEnd.getTime()) || proposedEnd <= proposedStart) {
+      return null;
+    }
+    const ownStart = new Date(editingBooking.timeslot.startAt).getTime();
+    const ownEnd = new Date(editingBooking.timeslot.endAt).getTime();
 
-  const handleChainSubmit = async (e) => {
+    return (
+      busySlots.find((slot) => {
+        if (slot.startAt.getTime() === ownStart && slot.endAt.getTime() === ownEnd) return false;
+        return rangesOverlap(proposedStart, proposedEnd, slot.startAt, slot.endAt);
+      }) || null
+    );
+  })();
+
+  // All fields must be filled before Save Changes is submittable — independent
+  // of whether a conflict was found.
+  const isFormIncomplete =
+    !editForm.purpose.trim() ||
+    !editForm.date ||
+    !editForm.startTime ||
+    !editForm.endTime;
+
+  const handleModifySubmit = async (e) => {
     e.preventDefault();
-    setChainFormError("");
+    setEditError("");
 
-    if (chainEditing === "new" && !chainForm.venueType.trim()) {
-      setChainFormError("Venue type is required.");
-      return;
-    }
-    if (chainForm.steps.length > MAX_APPROVAL_TIERS) {
-      setChainFormError(`A chain cannot have more than ${MAX_APPROVAL_TIERS} approvers.`);
-      return;
-    }
-    if (chainForm.steps.some((s) => !s.escalationWindowHours || Number(s.escalationWindowHours) <= 0)) {
-      setChainFormError("Every tier needs a positive escalation window (hours).");
+    if (conflictingSlot) {
+      setEditError(
+        `This overlaps an existing booking (${fmtSlotTime(conflictingSlot.startAt)}–${fmtSlotTime(conflictingSlot.endAt)}). Please choose a different time.`
+      );
       return;
     }
 
-    const steps = chainForm.steps.map((s) => ({
-      tier: s.tier,
-      role: "APPROVER",
-      escalationWindowHours: Number(s.escalationWindowHours),
-      assignedApproverId: s.assignedApproverId || null,
-    }));
-
-    setChainSubmitting(true);
+    setSubmittingEdit(true);
     try {
-      if (chainEditing === "new") {
-        await createApprovalChain({ venueType: chainForm.venueType.trim(), steps });
-      } else {
-        await updateApprovalChain(chainEditing.id, { steps });
-      }
-      closeChainModal();
-      load();
+      const { purpose, date, startTime, endTime } = editForm;
+      const startAt = new Date(`${date}T${startTime}`).toISOString();
+      const endAt = new Date(`${date}T${endTime}`).toISOString();
+
+      await modifyBooking(editingBooking.id, {
+        purpose,
+        timeslot: { startAt, endAt },
+      });
+
+      setEditingBooking(null);
+      loadBookings();
     } catch (err) {
-      setChainFormError(err.message);
+      if (err.status === 409) {
+        setEditError("This venue is already booked for the requested time slot.");
+      } else {
+        setEditError(err.message);
+      }
     } finally {
-      setChainSubmitting(false);
+      setSubmittingEdit(false);
     }
   };
+
+  const formatDate = (dt) =>
+    new Date(dt).toLocaleDateString("en-IN", {
+      weekday: "short",
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+
+  const formatTime = (dt) =>
+    new Date(dt).toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 
   return (
     <Layout>
       <div className="space-y-6">
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">Venue Management</h1>
-            <p className="text-blue-200/60 mt-1">Add, edit, or remove campus venues.</p>
+            <h1 className="text-2xl font-bold text-white">My Bookings</h1>
+            <p className="text-blue-200/60 mt-1">Welcome back, {user?.name}</p>
           </div>
-          <Button onClick={openCreate}>+ Add Venue</Button>
+          <Link to="/search" id="new-booking-btn">
+            <Button variant="primary">+ New Booking</Button>
+          </Link>
         </div>
 
+        {/* Error */}
         {error && (
           <div className="p-4 bg-red-500/20 border border-red-500/40 rounded-lg text-red-200">
             {error}
           </div>
         )}
 
-        {loading ? (
-          <Spinner label="Loading venues…" />
-        ) : (
-          <Card hover={false} className="p-0 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/10 bg-white/5">
-                  <th className="text-left p-4 text-blue-200/60 font-medium">Venue Name</th>
-                  <th className="text-left p-4 text-blue-200/60 font-medium">Location</th>
-                  <th className="text-left p-4 text-blue-200/60 font-medium">Capacity</th>
-                  <th className="text-left p-4 text-blue-200/60 font-medium">Type</th>
-                  <th className="text-right p-4 text-blue-200/60 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {venues.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="p-6 text-center text-blue-200/50 text-sm italic">
-                      No venues registered yet.
-                    </td>
-                  </tr>
-                ) : (
-                  venues.map((v) => (
-                    <tr key={v.id} className="border-b border-white/5 hover:bg-white/5 transition">
-                      <td className="p-4 text-white font-medium">{v.name}</td>
-                      <td className="p-4 text-blue-200/60">📍 {v.location}</td>
-                      <td className="p-4 text-blue-200/60">👥 {v.capacity} seats</td>
-                      <td className="p-4">
-                        <span className="px-2.5 py-1 text-xs bg-blue-500/20 text-blue-300 rounded-full border border-blue-500/30">
-                          {v.type}
-                        </span>
-                      </td>
-                      <td className="p-4 text-right space-x-2 whitespace-nowrap">
-                        <Button variant="outline" size="sm" onClick={() => openEdit(v)}>
-                          Edit
-                        </Button>
-                        <Button variant="danger" size="sm" onClick={() => handleDelete(v)}>
-                          Delete
-                        </Button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+        {/* Loading */}
+        {loading && <Spinner label="Loading bookings…" />}
+
+        {/* Empty */}
+        {!loading && bookings.length === 0 && (
+          <Card className="text-center py-16">
+            <svg className="w-16 h-16 text-blue-300/30 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <p className="text-blue-200/60 text-lg">No bookings yet</p>
+            <Link to="/search" className="inline-block mt-4 text-blue-400 hover:text-blue-300 transition">
+              Search for a venue →
+            </Link>
           </Card>
         )}
 
-        <Modal
-          isOpen={!!editing}
-          onClose={closeModal}
-          title={editing === "new" ? "Add Venue" : `Edit Venue: ${editing?.name}`}
-        >
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {formError && (
-              <div className="p-3 bg-red-500/20 border border-red-500/40 rounded-lg text-red-200 text-sm">
-                {formError}
-              </div>
-            )}
+        {/* Booking Cards */}
+        {!loading && bookings.length > 0 && (
+          <div className="grid gap-4">
+            {bookings.map((booking) => {
+              const chain = booking.approvalChainSnapshot || [];
+              const totalSteps = chain.length;
+              const currentStepNumber = (booking.currentStepIndex ?? 0) + 1;
 
-            <div>
-              <label htmlFor="venue-name" className="block text-sm text-blue-100 mb-1">
-                Name <span className="text-red-400">*</span>
-              </label>
-              <input
-                id="venue-name"
-                type="text"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                required
-                className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-              />
-            </div>
+              return (
+                <Card key={booking.id}>
+                  <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h3 className="text-lg font-semibold text-white">
+                          {booking.venue?.name || "Unknown Venue"}
+                        </h3>
+                        <Badge status={booking.status} />
+                      </div>
+                      <p className="text-blue-200/60 text-sm mb-1">
+                        📍 {booking.venue?.location || "—"}
+                      </p>
+                      <p className="text-blue-200/60 text-sm mb-1">
+                        📅 {formatDate(booking.timeslot.startAt)} &middot;{" "}
+                        {formatTime(booking.timeslot.startAt)} – {formatTime(booking.timeslot.endAt)}
+                      </p>
+                      <p className="text-blue-200/80 text-sm mt-2">
+                        <span className="text-blue-300/50">Purpose:</span> {booking.purpose}
+                      </p>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="venue-type" className="block text-sm text-blue-100 mb-1">
-                  Type <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="venue-type"
-                  type="text"
-                  value={form.type}
-                  onChange={(e) => setForm({ ...form, type: e.target.value })}
-                  placeholder="e.g. classroom"
-                  required
-                  className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                />
-              </div>
-              <div>
-                <label htmlFor="venue-capacity" className="block text-sm text-blue-100 mb-1">
-                  Capacity <span className="text-red-400">*</span>
-                </label>
-                <input
-                  id="venue-capacity"
-                  type="number"
-                  min="1"
-                  value={form.capacity}
-                  onChange={(e) => setForm({ ...form, capacity: e.target.value })}
-                  required
-                  className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label htmlFor="venue-location" className="block text-sm text-blue-100 mb-1">
-                Location <span className="text-red-400">*</span>
-              </label>
-              <input
-                id="venue-location"
-                type="text"
-                value={form.location}
-                onChange={(e) => setForm({ ...form, location: e.target.value })}
-                required
-                className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="venue-attributes" className="block text-sm text-blue-100 mb-1">
-                Attributes
-              </label>
-              <input
-                id="venue-attributes"
-                type="text"
-                value={form.attributes}
-                onChange={(e) => setForm({ ...form, attributes: e.target.value })}
-                placeholder="comma-separated, e.g. projector, whiteboard"
-                className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="venue-chain" className="block text-sm text-blue-100 mb-1">
-                Approval Chain <span className="text-red-400">*</span>
-              </label>
-              <select
-                id="venue-chain"
-                value={form.approvalChainId}
-                onChange={(e) => setForm({ ...form, approvalChainId: e.target.value })}
-                required
-                className="w-full px-3 py-2 bg-slate-800 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-              >
-                <option value="" disabled>
-                  Select a chain…
-                </option>
-                {chains.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.venueType} (v{c.version}
-                    {c.steps?.length ? `, ${c.steps.length} tier${c.steps.length === 1 ? "" : "s"}` : ", auto-approve"}
-                    )
-                  </option>
-                ))}
-              </select>
-              {chains.length === 0 && (
-                <p className="text-xs text-amber-300/80 mt-1">
-                  No approval chains found — one must exist before a venue can be created.
-                </p>
-              )}
-            </div>
-
-            <div className="flex gap-3 pt-2">
-              <Button variant="secondary" onClick={closeModal} className="flex-1" type="button">
-                Cancel
-              </Button>
-              <Button type="submit" loading={submitting} className="flex-1">
-                {editing === "new" ? "Create Venue" : "Save Changes"}
-              </Button>
-            </div>
-          </form>
-        </Modal>
-
-        {/* Approval Chains */}
-        <div className="flex items-center justify-between pt-2">
-          <div>
-            <h2 className="text-lg font-bold text-white">Approval Chains</h2>
-            <p className="text-blue-200/60 text-sm mt-1">
-              Configure the ordered approver tiers venues route through (max {MAX_APPROVAL_TIERS} tiers,
-              or 0 for no approval required).
-            </p>
-          </div>
-          <Button onClick={openCreateChain}>+ Add Chain</Button>
-        </div>
-
-        {!loading && (
-          <Card hover={false} className="p-0 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/10 bg-white/5">
-                  <th className="text-left p-4 text-blue-200/60 font-medium">Venue Type</th>
-                  <th className="text-left p-4 text-blue-200/60 font-medium">Version</th>
-                  <th className="text-left p-4 text-blue-200/60 font-medium">Tiers</th>
-                  <th className="text-right p-4 text-blue-200/60 font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {chains.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="p-6 text-center text-blue-200/50 text-sm italic">
-                      No approval chains configured yet.
-                    </td>
-                  </tr>
-                ) : (
-                  chains.map((c) => (
-                    <tr key={c.id} className="border-b border-white/5 hover:bg-white/5 transition">
-                      <td className="p-4 text-white font-medium">{c.venueType}</td>
-                      <td className="p-4 text-blue-200/60 font-mono">v{c.version}</td>
-                      <td className="p-4 text-blue-200/60">
-                        {(c.steps || []).length === 0 ? (
-                          <span className="text-emerald-300/80 italic">No approval required (auto-approve)</span>
-                        ) : (
-                          c.steps
-                            .slice()
-                            .sort((a, b) => a.tier - b.tier)
-                            .map((s) => {
-                              const assigned = s.assignedApproverId
-                                ? approvers.find((a) => a.id === s.assignedApproverId)
-                                : null;
-                              const who = s.assignedApproverId
-                                ? assigned?.name || "unknown user"
-                                : "any";
-                              return `T${s.tier} (${s.escalationWindowHours}h, ${who})`;
-                            })
-                            .join(", ")
+                      {/* Approval Step Status */}
+                      <div className="mt-4 pt-3 border-t border-white/10">
+                        {booking.status === "PENDING" && (
+                          <div className="flex items-center gap-2 text-amber-300/80 text-xs">
+                            <span>⏳ Step {currentStepNumber} of {totalSteps || 1} pending</span>
+                            {chain[booking.currentStepIndex] && (
+                              <span>(Awaiting Tier {chain[booking.currentStepIndex].tier} Approver)</span>
+                            )}
+                          </div>
                         )}
-                      </td>
-                      <td className="p-4 text-right">
-                        <Button variant="outline" size="sm" onClick={() => openEditChain(c)}>
-                          Edit
-                        </Button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </Card>
-        )}
+                        {booking.status === "APPROVED" && (
+                          <div className="text-emerald-300/80 text-xs">
+                            ✅ Fully approved by all required tiers
+                          </div>
+                        )}
+                        {booking.status === "REJECTED" && (
+                          <div className="text-red-300/80 text-xs">
+                            ❌ Request rejected
+                          </div>
+                        )}
 
-        <Modal
-          isOpen={!!chainEditing}
-          onClose={closeChainModal}
-          title={chainEditing === "new" ? "Add Approval Chain" : `Edit Chain: ${chainEditing?.venueType}`}
-        >
-          <form onSubmit={handleChainSubmit} className="space-y-4">
-            {chainFormError && (
-              <div className="p-3 bg-red-500/20 border border-red-500/40 rounded-lg text-red-200 text-sm">
-                {chainFormError}
-              </div>
-            )}
-
-            <div>
-              <label htmlFor="chain-venue-type" className="block text-sm text-blue-100 mb-1">
-                Venue Type <span className="text-red-400">*</span>
-              </label>
-              <input
-                id="chain-venue-type"
-                type="text"
-                value={chainForm.venueType}
-                onChange={(e) => setChainForm({ ...chainForm, venueType: e.target.value })}
-                placeholder="e.g. auditorium"
-                required
-                disabled={chainEditing !== "new"}
-                className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50"
-              />
-              {chainEditing !== "new" && (
-                <p className="text-xs text-blue-300/50 mt-1">Venue type can&apos;t be changed after creation.</p>
-              )}
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-sm text-blue-100">
-                  Approval Tiers ({chainForm.steps.length}/{MAX_APPROVAL_TIERS}){" "}
-                  <span className="text-red-400">*</span>
-                </label>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={addTier}
-                  disabled={chainForm.steps.length >= MAX_APPROVAL_TIERS}
-                >
-                  + Add Tier
-                </Button>
-              </div>
-
-              <div className="space-y-2">
-                {chainForm.steps.length === 0 ? (
-                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-200 text-sm">
-                    No approval tiers — bookings for this venue type will be{" "}
-                    <strong>auto-approved instantly</strong>, no sign-off required.
-                  </div>
-                ) : (
-                  chainForm.steps.map((step, i) => {
-                    const tierApprovers = approvers.filter((a) => a.approverTier === step.tier);
-                    return (
-                      <div
-                        key={i}
-                        className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-lg p-2.5"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono text-blue-300/70 w-16 shrink-0">Tier {step.tier}</span>
-                          <span className="text-xs text-blue-200/60 shrink-0">Approver ·</span>
-                          <input
-                            type="number"
-                            min="1"
-                            value={step.escalationWindowHours}
-                            onChange={(e) => updateTierHours(i, e.target.value)}
-                            placeholder="Escalation window (hrs)"
-                            required
-                            className="flex-1 px-2 py-1.5 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                          />
-                          <span className="text-xs text-blue-200/40 shrink-0">hrs</span>
-                          <button
-                            type="button"
-                            onClick={() => removeTier(i)}
-                            className="text-red-300/70 hover:text-red-300 px-1"
-                            aria-label={`Remove tier ${step.tier}`}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                        <div className="flex items-center gap-2 pl-[4.5rem]">
-                          <select
-                            value={step.assignedApproverId}
-                            onChange={(e) => updateTierApprover(i, e.target.value)}
-                            className="flex-1 px-2 py-1.5 bg-slate-800 border border-white/20 rounded-lg text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                          >
-                            <option value="">Any approver at Tier {step.tier}</option>
-                            {tierApprovers.map((a) => (
-                              <option key={a.id} value={a.id}>
-                                {a.name} ({a.email})
-                              </option>
+                        {/* Approvals History / Comments */}
+                        {booking.approvals && booking.approvals.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {booking.approvals.map((app, idx) => (
+                              <div key={idx} className="text-xs text-blue-200/60 flex items-center gap-2">
+                                <span className={app.decision === "APPROVE" ? "text-emerald-400" : "text-red-400"}>
+                                  ● Step {app.stepIndex + 1} ({app.decision}) by {app.approver?.name}
+                                </span>
+                                {app.comment && <span className="italic text-blue-300/80">&mdash; &quot;{app.comment}&quot;</span>}
+                              </div>
                             ))}
-                          </select>
-                        </div>
-                        {tierApprovers.length === 0 && (
-                          <p className="text-[11px] text-amber-300/70 pl-[4.5rem]">
-                            No users are set as Tier {step.tier} approvers yet — assign one from User
-                            Management first, or leave this on &ldquo;Any approver&rdquo;.
-                          </p>
+                          </div>
                         )}
                       </div>
-                    );
-                  })
-                )}
-              </div>
-              <p className="text-xs text-blue-300/50 mt-1">
-                Every tier is an APPROVER step; set how many hours before it escalates. Optionally pin a
-                tier to one specific approver so only they see it — otherwise any approver at that tier
-                can act on it. Remove every tier to make this venue type require no approval at all.
-              </p>
-            </div>
+                    </div>
 
-            <div className="flex gap-3 pt-2">
-              <Button variant="secondary" onClick={closeChainModal} className="flex-1" type="button">
-                Cancel
-              </Button>
-              <Button type="submit" loading={chainSubmitting} className="flex-1">
-                {chainEditing === "new" ? "Create Chain" : "Save Changes"}
-              </Button>
+                    {/* Actions — only for cancellable or modifiable bookings */}
+                    {["PENDING", "APPROVED"].includes(booking.status) && (
+                      <div className="flex gap-2">
+                        <Button variant="outline" size="sm" onClick={() => openModifyModal(booking)}>
+                          Modify
+                        </Button>
+                        <Button variant="danger" size="sm" onClick={() => handleCancel(booking.id)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Modify Booking Modal */}
+        <Modal
+          isOpen={!!editingBooking}
+          onClose={() => setEditingBooking(null)}
+          title="Modify Booking"
+        >
+          {editingBooking && (
+            <div>
+              <p className="text-blue-200/60 text-sm mb-4">{editingBooking.venue?.name}</p>
+
+              {editError && (
+                <div className="mb-4 p-3 bg-red-500/20 border border-red-500/40 rounded-lg text-red-200 text-sm">
+                  {editError}
+                </div>
+              )}
+
+              <form onSubmit={handleModifySubmit} className="space-y-4">
+                <div>
+                  <label htmlFor="modify-purpose" className="block text-sm text-blue-100 mb-1">Purpose</label>
+                  <input
+                    id="modify-purpose"
+                    type="text"
+                    value={editForm.purpose}
+                    onChange={(e) => setEditForm({ ...editForm, purpose: e.target.value })}
+                    required
+                    className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modify-date" className="block text-sm text-blue-100 mb-1">Date</label>
+                  <input
+                    id="modify-date"
+                    type="date"
+                    value={editForm.date}
+                    onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                    required
+                    className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  />
+                  {checkingAvailability && (
+                    <p className="text-xs text-blue-300/50 mt-1">Checking availability…</p>
+                  )}
+                  {!checkingAvailability && busySlots.length > 0 && (
+                    <p className="text-xs text-amber-300/70 mt-1">
+                      Already booked on this date: {busySlots.map((s) => `${fmtSlotTime(s.startAt)}–${fmtSlotTime(s.endAt)}`).join(", ")}
+                    </p>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label htmlFor="modify-start" className="block text-sm text-blue-100 mb-1">Start Time</label>
+                    <input
+                      id="modify-start"
+                      type="time"
+                      value={editForm.startTime}
+                      onChange={(e) => setEditForm({ ...editForm, startTime: e.target.value })}
+                      required
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="modify-end" className="block text-sm text-blue-100 mb-1">End Time</label>
+                    <input
+                      id="modify-end"
+                      type="time"
+                      value={editForm.endTime}
+                      onChange={(e) => setEditForm({ ...editForm, endTime: e.target.value })}
+                      required
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    />
+                  </div>
+                </div>
+
+                <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                  <p className="text-amber-200/80 text-xs">
+                    ⚠️ Changing date or time re-checks the venue&apos;s approval requirements: most venues
+                    reset to PENDING for re-approval, while venues that require no approval are
+                    re-approved automatically.
+                  </p>
+                </div>
+
+                {conflictingSlot && (
+                  <div className="p-3 bg-red-500/20 border border-red-500/40 rounded-lg text-red-200 text-sm">
+                    This overlaps an existing booking ({fmtSlotTime(conflictingSlot.startAt)}–{fmtSlotTime(conflictingSlot.endAt)}).
+                    Please choose a different time.
+                  </div>
+                )}
+
+                <div className="flex gap-3">
+                  <Button variant="secondary" onClick={() => setEditingBooking(null)} className="flex-1">
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    loading={submittingEdit}
+                    disabled={!!conflictingSlot || isFormIncomplete}
+                    className="flex-1"
+                  >
+                    Save Changes
+                  </Button>
+                </div>
+              </form>
             </div>
-          </form>
+          )}
         </Modal>
       </div>
     </Layout>
