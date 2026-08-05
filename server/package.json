@@ -8,7 +8,7 @@
     "server": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "vitest run",
-    "postinstall": "prisma generate --schema=server/prisma/schema.prisma"
+    "postinstall": "prisma generate --schema=./prisma/schema.prisma"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
