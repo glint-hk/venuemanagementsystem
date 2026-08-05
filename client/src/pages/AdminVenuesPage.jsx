@@ -7,6 +7,7 @@ import {
   fetchApprovalChains,
   createApprovalChain,
   updateApprovalChain,
+  fetchUsers,
 } from "../lib/apiClient.js";
 import Layout from "../components/Layout.jsx";
 import { Button, Card, Modal, Spinner } from "../components/ui/index.js";
@@ -22,12 +23,13 @@ const EMPTY_FORM = {
   approvalChainId: "",
 };
 
-const emptyStep = (tier) => ({ tier, role: "APPROVER", escalationWindowHours: "24" });
+const emptyStep = (tier) => ({ tier, role: "APPROVER", escalationWindowHours: "24", assignedApproverId: "" });
 const EMPTY_CHAIN_FORM = { venueType: "", steps: [emptyStep(1)] };
 
 export default function AdminVenuesPage() {
   const [venues, setVenues] = useState([]);
   const [chains, setChains] = useState([]);
+  const [approvers, setApprovers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -45,15 +47,18 @@ export default function AdminVenuesPage() {
     try {
       setLoading(true);
       setError("");
-      const [venuesData, chainsData] = await Promise.all([
+      const [venuesData, chainsData, usersData] = await Promise.all([
         fetchVenues(),
         fetchApprovalChains().catch(() => []),
+        fetchUsers().catch(() => []),
       ]);
       // GET /api/venues wraps its payload as { venues: [...] }; guard against
       // any other shape (or a partially-failed request) so this never crashes.
       const venuesList = Array.isArray(venuesData) ? venuesData : venuesData?.venues;
       setVenues(Array.isArray(venuesList) ? venuesList : []);
       setChains(Array.isArray(chainsData) ? chainsData : []);
+      const usersList = Array.isArray(usersData) ? usersData : [];
+      setApprovers(usersList.filter((u) => u.role === "APPROVER"));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -153,6 +158,7 @@ export default function AdminVenuesPage() {
             tier: s.tier,
             role: "APPROVER",
             escalationWindowHours: String(s.escalationWindowHours ?? ""),
+            assignedApproverId: s.assignedApproverId || "",
           }))
         : [],
     });
@@ -175,7 +181,13 @@ export default function AdminVenuesPage() {
     setChainForm((prev) => {
       const steps = prev.steps
         .filter((_, i) => i !== index)
-        .map((s, i) => ({ ...s, tier: i + 1 }));
+        .map((s, i) => {
+          const newTier = i + 1;
+          // Renumbering can shift a step onto a different tier — an
+          // approver assigned to the old tier number may no longer be
+          // valid, so clear the assignment rather than silently mismatch it.
+          return newTier === s.tier ? s : { ...s, tier: newTier, assignedApproverId: "" };
+        });
       return { ...prev, steps };
     });
   };
@@ -184,6 +196,13 @@ export default function AdminVenuesPage() {
     setChainForm((prev) => ({
       ...prev,
       steps: prev.steps.map((s, i) => (i === index ? { ...s, escalationWindowHours: value } : s)),
+    }));
+  };
+
+  const updateTierApprover = (index, value) => {
+    setChainForm((prev) => ({
+      ...prev,
+      steps: prev.steps.map((s, i) => (i === index ? { ...s, assignedApproverId: value } : s)),
     }));
   };
 
@@ -208,6 +227,7 @@ export default function AdminVenuesPage() {
       tier: s.tier,
       role: "APPROVER",
       escalationWindowHours: Number(s.escalationWindowHours),
+      assignedApproverId: s.assignedApproverId || null,
     }));
 
     setChainSubmitting(true);
@@ -458,7 +478,15 @@ export default function AdminVenuesPage() {
                           c.steps
                             .slice()
                             .sort((a, b) => a.tier - b.tier)
-                            .map((s) => `T${s.tier} (${s.escalationWindowHours}h)`)
+                            .map((s) => {
+                              const assigned = s.assignedApproverId
+                                ? approvers.find((a) => a.id === s.assignedApproverId)
+                                : null;
+                              const who = s.assignedApproverId
+                                ? assigned?.name || "unknown user"
+                                : "any";
+                              return `T${s.tier} (${s.escalationWindowHours}h, ${who})`;
+                            })
                             .join(", ")
                         )}
                       </td>
@@ -530,35 +558,64 @@ export default function AdminVenuesPage() {
                     <strong>auto-approved instantly</strong>, no sign-off required.
                   </div>
                 ) : (
-                  chainForm.steps.map((step, i) => (
-                    <div key={i} className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-lg p-2.5">
-                      <span className="text-xs font-mono text-blue-300/70 w-16 shrink-0">Tier {step.tier}</span>
-                      <span className="text-xs text-blue-200/60 shrink-0">Approver ·</span>
-                      <input
-                        type="number"
-                        min="1"
-                        value={step.escalationWindowHours}
-                        onChange={(e) => updateTierHours(i, e.target.value)}
-                        placeholder="Escalation window (hrs)"
-                        required
-                        className="flex-1 px-2 py-1.5 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                      />
-                      <span className="text-xs text-blue-200/40 shrink-0">hrs</span>
-                      <button
-                        type="button"
-                        onClick={() => removeTier(i)}
-                        className="text-red-300/70 hover:text-red-300 px-1"
-                        aria-label={`Remove tier ${step.tier}`}
+                  chainForm.steps.map((step, i) => {
+                    const tierApprovers = approvers.filter((a) => a.approverTier === step.tier);
+                    return (
+                      <div
+                        key={i}
+                        className="flex flex-col gap-2 bg-white/5 border border-white/10 rounded-lg p-2.5"
                       >
-                        ✕
-                      </button>
-                    </div>
-                  ))
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-blue-300/70 w-16 shrink-0">Tier {step.tier}</span>
+                          <span className="text-xs text-blue-200/60 shrink-0">Approver ·</span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={step.escalationWindowHours}
+                            onChange={(e) => updateTierHours(i, e.target.value)}
+                            placeholder="Escalation window (hrs)"
+                            required
+                            className="flex-1 px-2 py-1.5 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                          />
+                          <span className="text-xs text-blue-200/40 shrink-0">hrs</span>
+                          <button
+                            type="button"
+                            onClick={() => removeTier(i)}
+                            className="text-red-300/70 hover:text-red-300 px-1"
+                            aria-label={`Remove tier ${step.tier}`}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-2 pl-[4.5rem]">
+                          <select
+                            value={step.assignedApproverId}
+                            onChange={(e) => updateTierApprover(i, e.target.value)}
+                            className="flex-1 px-2 py-1.5 bg-slate-800 border border-white/20 rounded-lg text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                          >
+                            <option value="">Any approver at Tier {step.tier}</option>
+                            {tierApprovers.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.name} ({a.email})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {tierApprovers.length === 0 && (
+                          <p className="text-[11px] text-amber-300/70 pl-[4.5rem]">
+                            No users are set as Tier {step.tier} approvers yet — assign one from User
+                            Management first, or leave this on "Any approver".
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })
                 )}
               </div>
               <p className="text-xs text-blue-300/50 mt-1">
-                Every tier is an APPROVER step; set how many hours before it escalates. Remove every
-                tier to make this venue type require no approval at all.
+                Every tier is an APPROVER step; set how many hours before it escalates. Optionally pin a
+                tier to one specific approver so only they see it — otherwise any approver at that tier
+                can act on it. Remove every tier to make this venue type require no approval at all.
               </p>
             </div>
 

@@ -92,9 +92,11 @@ export async function createBooking(req, res, next) {
       // as the submission-confirmation notification above (US-C2/US-C4).
       if (chainSnapshot.length > 0) {
         const firstStep = chainSnapshot[0];
-        const firstApprover = await tx.user.findFirst({
-          where: { role: 'APPROVER', approverTier: firstStep.tier },
-        });
+        const firstApprover = firstStep.assignedApproverId
+          ? await tx.user.findUnique({ where: { id: firstStep.assignedApproverId } })
+          : await tx.user.findFirst({
+              where: { role: 'APPROVER', approverTier: firstStep.tier },
+            });
         // No approver seeded for this tier — the booking still gets created;
         // there is simply no one to notify until one is assigned.
         if (firstApprover) {
@@ -143,17 +145,11 @@ export async function createBooking(req, res, next) {
 /** GET /api/bookings — list bookings (scoped by role). */
 export async function getBookings(req, res, next) {
   try {
-    const { venueId, status, bookerId } = req.query;
-    const whereClause = {};
+    const { venueId, status } = req.query;
+    const whereClause = { bookerId: req.user.id };
 
     if (venueId) whereClause.venueId = venueId;
     if (status) whereClause.status = status;
-
-    if (req.user.role === Role.BOOKER) {
-      whereClause.bookerId = req.user.id;
-    } else if (bookerId) {
-      whereClause.bookerId = bookerId;
-    }
 
     const bookings = await prisma.booking.findMany({
       where: whereClause,
@@ -308,6 +304,18 @@ export async function updateBooking(req, res, next) {
         assertTransition(workingStatus, BookingStatus.PENDING);
         workingStatus = BookingStatus.PENDING;
         stepIndex = 0;
+
+        // A 0-tier chain means "all tiers approve" (the PENDING -> APPROVED
+        // trigger in shared/stateMachine.js) is vacuously already true.
+        // MODIFIED -> APPROVED isn't itself a valid transition, so this
+        // still lands on PENDING first as required, then immediately takes
+        // the already-legal PENDING -> APPROVED hop — otherwise the booking
+        // would sit at PENDING forever, since approveBooking refuses to act
+        // on an empty chain.
+        if (freshSnapshot.length === 0) {
+          assertTransition(workingStatus, BookingStatus.APPROVED);
+          workingStatus = BookingStatus.APPROVED;
+        }
       }
 
       const updatedCount = await tx.booking.updateMany({
@@ -333,7 +341,7 @@ export async function updateBooking(req, res, next) {
           data: {
             bookingId: id,
             recipientId: existing.bookerId,
-            templateKey: "BOOKING_MODIFIED",
+            templateKey: workingStatus === BookingStatus.APPROVED ? "BOOKING_APPROVED" : "BOOKING_MODIFIED",
             payload: { bookingId: id, venueName: targetVenue.name },
           },
         });

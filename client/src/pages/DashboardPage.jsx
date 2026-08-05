@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
-import { fetchMyBookings, cancelBooking, modifyBooking } from "../lib/apiClient.js";
+import { fetchMyBookings, cancelBooking, modifyBooking, fetchVenueAvailability } from "../lib/apiClient.js";
 import Layout from "../components/Layout.jsx";
 import { Button, Card, Badge, Modal, Spinner } from "../components/ui/index.js";
 
@@ -14,6 +14,8 @@ export default function DashboardPage() {
   const [editForm, setEditForm] = useState({ purpose: "", date: "", startTime: "", endTime: "" });
   const [editError, setEditError] = useState("");
   const [submittingEdit, setSubmittingEdit] = useState(false);
+  const [busySlots, setBusySlots] = useState([]); // [{startAt: Date, endAt: Date}] for the selected date
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
 
   const loadBookings = async () => {
     try {
@@ -56,11 +58,92 @@ export default function DashboardPage() {
       endTime: endStr,
     });
     setEditError("");
+    setBusySlots([]);
   };
+
+  // Same pattern as the create-booking modal in SearchPage.jsx: pull the
+  // venue's busy slots for the selected date so a reschedule can be flagged
+  // before submit, not just after a 409. Still a UX courtesy only — the
+  // database exclusion constraint is the real guarantee.
+  useEffect(() => {
+    if (!editingBooking || !editForm.date) {
+      setBusySlots([]);
+      return;
+    }
+    let cancelled = false;
+    const venueId = editingBooking.venue?.id;
+    if (!venueId) {
+      setBusySlots([]);
+      return;
+    }
+    const dayStart = new Date(`${editForm.date}T00:00:00`);
+    const dayEnd = new Date(`${editForm.date}T23:59:59`);
+
+    setCheckingAvailability(true);
+    fetchVenueAvailability(venueId, dayStart.toISOString(), dayEnd.toISOString())
+      .then((slots) => {
+        if (cancelled) return;
+        const busy = (Array.isArray(slots) ? slots : [])
+          .filter((s) => s.busy)
+          .map((s) => ({ startAt: new Date(s.timeslot.startAt), endAt: new Date(s.timeslot.endAt) }));
+        setBusySlots(busy);
+      })
+      .catch(() => {
+        if (!cancelled) setBusySlots([]);
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingAvailability(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [editingBooking, editForm.date]);
+
+  const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && bStart < aEnd;
+  const fmtSlotTime = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  // The busy slot (if any) the currently-entered start/end would collide
+  // with — excluding the booking's OWN current slot, since without that
+  // exclusion editing anything other than the time would always show a
+  // false conflict against itself.
+  const conflictingSlot = (() => {
+    if (!editingBooking || !editForm.date || !editForm.startTime || !editForm.endTime) return null;
+    const proposedStart = new Date(`${editForm.date}T${editForm.startTime}`);
+    const proposedEnd = new Date(`${editForm.date}T${editForm.endTime}`);
+    if (Number.isNaN(proposedStart.getTime()) || Number.isNaN(proposedEnd.getTime()) || proposedEnd <= proposedStart) {
+      return null;
+    }
+    const ownStart = new Date(editingBooking.timeslot.startAt).getTime();
+    const ownEnd = new Date(editingBooking.timeslot.endAt).getTime();
+
+    return (
+      busySlots.find((slot) => {
+        if (slot.startAt.getTime() === ownStart && slot.endAt.getTime() === ownEnd) return false;
+        return rangesOverlap(proposedStart, proposedEnd, slot.startAt, slot.endAt);
+      }) || null
+    );
+  })();
+
+  // All fields must be filled before Save Changes is submittable — independent
+  // of whether a conflict was found.
+  const isFormIncomplete =
+    !editForm.purpose.trim() ||
+    !editForm.date ||
+    !editForm.startTime ||
+    !editForm.endTime;
 
   const handleModifySubmit = async (e) => {
     e.preventDefault();
     setEditError("");
+
+    if (conflictingSlot) {
+      setEditError(
+        `This overlaps an existing booking (${fmtSlotTime(conflictingSlot.startAt)}–${fmtSlotTime(conflictingSlot.endAt)}). Please choose a different time.`
+      );
+      return;
+    }
+
     setSubmittingEdit(true);
     try {
       const { purpose, date, startTime, endTime } = editForm;
@@ -258,6 +341,14 @@ export default function DashboardPage() {
                     required
                     className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   />
+                  {checkingAvailability && (
+                    <p className="text-xs text-blue-300/50 mt-1">Checking availability…</p>
+                  )}
+                  {!checkingAvailability && busySlots.length > 0 && (
+                    <p className="text-xs text-amber-300/70 mt-1">
+                      Already booked on this date: {busySlots.map((s) => `${fmtSlotTime(s.startAt)}–${fmtSlotTime(s.endAt)}`).join(", ")}
+                    </p>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -286,15 +377,29 @@ export default function DashboardPage() {
 
                 <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
                   <p className="text-amber-200/80 text-xs">
-                    ⚠️ Changing date or time will reset status to PENDING and re-trigger the approval chain.
+                    ⚠️ Changing date or time re-checks the venue's approval requirements: most venues
+                    reset to PENDING for re-approval, while venues that require no approval are
+                    re-approved automatically.
                   </p>
                 </div>
+
+                {conflictingSlot && (
+                  <div className="p-3 bg-red-500/20 border border-red-500/40 rounded-lg text-red-200 text-sm">
+                    This overlaps an existing booking ({fmtSlotTime(conflictingSlot.startAt)}–{fmtSlotTime(conflictingSlot.endAt)}).
+                    Please choose a different time.
+                  </div>
+                )}
 
                 <div className="flex gap-3">
                   <Button variant="secondary" onClick={() => setEditingBooking(null)} className="flex-1">
                     Cancel
                   </Button>
-                  <Button type="submit" loading={submittingEdit} className="flex-1">
+                  <Button
+                    type="submit"
+                    loading={submittingEdit}
+                    disabled={!!conflictingSlot || isFormIncomplete}
+                    className="flex-1"
+                  >
                     Save Changes
                   </Button>
                 </div>

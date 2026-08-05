@@ -1,6 +1,6 @@
 import prisma from "../lib/prisma.js";
 import { activeBookingOverlapFilter } from "../lib/venueHelpers.js";
-import { timeslotsOverlap } from "../lib/bookingHelpers.js";
+import { timeslotsOverlap, formatPublicAvailabilitySlot } from "../lib/bookingHelpers.js";
 
 /**
  * GET /api/venues

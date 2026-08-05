@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchVenues, createBooking } from "../lib/apiClient.js";
+import { fetchVenues, createBooking, fetchVenueAvailability } from "../lib/apiClient.js";
 import Layout from "../components/Layout.jsx";
 import { Button, Card, Badge, Modal, Spinner } from "../components/ui/index.js";
 
@@ -14,6 +14,8 @@ export default function SearchPage() {
   const [bookingForm, setBookingForm] = useState({ purpose: "", date: "", startTime: "", endTime: "" });
   const [bookingError, setBookingError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [busySlots, setBusySlots] = useState([]); // [{startAt: Date, endAt: Date}] for the selected date
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
 
   const loadVenues = async () => {
     try {
@@ -45,11 +47,75 @@ export default function SearchPage() {
     setShowBookingModal(venue);
     setBookingForm({ purpose: "", date: "", startTime: "", endTime: "" });
     setBookingError("");
+    setBusySlots([]);
   };
+
+  // Whenever the selected date (or venue) changes, pull that day's busy
+  // slots so the modal can warn about — and block — an overlapping pick
+  // before the person ever hits submit. This is a UX courtesy only; the
+  // database exclusion constraint on (venueId, timeslot) is still the real
+  // authority and the 409 handler below stays in place as the backstop.
+  useEffect(() => {
+    if (!showBookingModal || !bookingForm.date) {
+      setBusySlots([]);
+      return;
+    }
+    let cancelled = false;
+    const dayStart = new Date(`${bookingForm.date}T00:00:00`);
+    const dayEnd = new Date(`${bookingForm.date}T23:59:59`);
+
+    setCheckingAvailability(true);
+    fetchVenueAvailability(showBookingModal.id, dayStart.toISOString(), dayEnd.toISOString())
+      .then((slots) => {
+        if (cancelled) return;
+        const busy = (Array.isArray(slots) ? slots : [])
+          .filter((s) => s.busy)
+          .map((s) => ({ startAt: new Date(s.timeslot.startAt), endAt: new Date(s.timeslot.endAt) }));
+        setBusySlots(busy);
+      })
+      .catch(() => {
+        // Availability check failing shouldn't block the form — the server
+        // still enforces the real constraint on submit either way.
+        if (!cancelled) setBusySlots([]);
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingAvailability(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showBookingModal, bookingForm.date]);
+
+  const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && bStart < aEnd;
+
+  // The specific busy slot (if any) the currently-entered start/end would
+  // collide with — null while the form is incomplete or clear of conflicts.
+  const conflictingSlot = (() => {
+    if (!bookingForm.date || !bookingForm.startTime || !bookingForm.endTime) return null;
+    const proposedStart = new Date(`${bookingForm.date}T${bookingForm.startTime}`);
+    const proposedEnd = new Date(`${bookingForm.date}T${bookingForm.endTime}`);
+    if (Number.isNaN(proposedStart.getTime()) || Number.isNaN(proposedEnd.getTime()) || proposedEnd <= proposedStart) {
+      return null;
+    }
+    return (
+      busySlots.find((slot) => rangesOverlap(proposedStart, proposedEnd, slot.startAt, slot.endAt)) || null
+    );
+  })();
+
+  const fmtSlotTime = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   const handleBooking = async (e) => {
     e.preventDefault();
     setBookingError("");
+
+    if (conflictingSlot) {
+      setBookingError(
+        `This overlaps an existing booking (${fmtSlotTime(conflictingSlot.startAt)}–${fmtSlotTime(conflictingSlot.endAt)}). Please choose a different time.`
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
       const { purpose, date, startTime, endTime } = bookingForm;
@@ -209,6 +275,14 @@ export default function SearchPage() {
                     required
                     className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   />
+                  {checkingAvailability && (
+                    <p className="text-xs text-blue-300/50 mt-1">Checking availability…</p>
+                  )}
+                  {!checkingAvailability && busySlots.length > 0 && (
+                    <p className="text-xs text-amber-300/70 mt-1">
+                      Already booked on this date: {busySlots.map((s) => `${fmtSlotTime(s.startAt)}–${fmtSlotTime(s.endAt)}`).join(", ")}
+                    </p>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -235,6 +309,13 @@ export default function SearchPage() {
                   </div>
                 </div>
 
+                {conflictingSlot && (
+                  <div className="p-3 bg-red-500/20 border border-red-500/40 rounded-lg text-red-200 text-sm">
+                    This overlaps an existing booking ({fmtSlotTime(conflictingSlot.startAt)}–{fmtSlotTime(conflictingSlot.endAt)}).
+                    Please choose a different time.
+                  </div>
+                )}
+
                 <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
                   <p className="text-amber-200/80 text-xs">
                     ⚠️ Changing date, time, or venue after submission will re-trigger the approval process.
@@ -245,7 +326,13 @@ export default function SearchPage() {
                   <Button variant="secondary" onClick={() => setShowBookingModal(null)} className="flex-1">
                     Cancel
                   </Button>
-                  <Button type="submit" id="submit-booking-btn" loading={submitting} className="flex-1">
+                  <Button
+                    type="submit"
+                    id="submit-booking-btn"
+                    loading={submitting}
+                    disabled={!!conflictingSlot}
+                    className="flex-1"
+                  >
                     Submit Request
                   </Button>
                 </div>

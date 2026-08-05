@@ -154,6 +154,15 @@ const MAX_APPROVAL_TIERS = 6;
 // a zero-step chain should be rejected. Product decision overrides that: an
 // empty chain now means "no approval required" — see createBooking in
 // bookingController.js, which auto-approves bookings against an empty chain.
+//
+// Each step also accepts an optional `assignedApproverId`. This is an
+// addition beyond what shared/contracts.js documents for
+// ApprovalChainConfigRequest (tier/role/escalationWindowHours only) — it's
+// additive and backward-compatible: a step without it still resolves to
+// "any APPROVER at that tier" exactly as before, in bookingController.js and
+// approvalController.js. When set, only that specific user (or an ADMIN) can
+// see or decide that step, instead of every approver who happens to share
+// the tier number.
 function validateApprovalSteps(steps) {
   if (!Array.isArray(steps)) {
     return "steps must be an array (use an empty array for 'no approval required').";
@@ -173,6 +182,39 @@ function validateApprovalSteps(steps) {
     }
     if (!Number.isFinite(Number(step.escalationWindowHours)) || Number(step.escalationWindowHours) <= 0) {
       return "Each step needs a positive escalationWindowHours.";
+    }
+    if (step.assignedApproverId != null && typeof step.assignedApproverId !== "string") {
+      return "assignedApproverId must be a string user id, or omitted.";
+    }
+  }
+  return null;
+}
+
+/**
+ * Confirms each step's assignedApproverId (if present) actually refers to an
+ * APPROVER whose own approverTier matches that step's tier — otherwise a
+ * step could point at someone who can never legitimately act on it.
+ */
+async function validateStepApprovers(steps) {
+  const idsToCheck = steps.filter((s) => s.assignedApproverId);
+  if (idsToCheck.length === 0) return null;
+
+  const users = await prisma.user.findMany({
+    where: { id: { in: idsToCheck.map((s) => s.assignedApproverId) } },
+    select: { id: true, role: true, approverTier: true },
+  });
+  const byId = new Map(users.map((u) => [u.id, u]));
+
+  for (const step of idsToCheck) {
+    const user = byId.get(step.assignedApproverId);
+    if (!user) {
+      return `assignedApproverId ${step.assignedApproverId} does not match any user.`;
+    }
+    if (user.role !== "APPROVER") {
+      return `assignedApproverId ${step.assignedApproverId} is not an APPROVER.`;
+    }
+    if (user.approverTier !== step.tier) {
+      return `assignedApproverId ${step.assignedApproverId} is tier ${user.approverTier}, not tier ${step.tier}.`;
     }
   }
   return null;
@@ -215,8 +257,14 @@ export async function createApprovalChain(req, res, next) {
         tier: s.tier,
         role: "APPROVER",
         escalationWindowHours: Number(s.escalationWindowHours),
+        assignedApproverId: s.assignedApproverId || null,
       }))
       .sort((a, b) => a.tier - b.tier);
+
+    const approverError = await validateStepApprovers(orderedSteps);
+    if (approverError) {
+      return res.status(400).json({ error: approverError });
+    }
 
     const chain = await prisma.$transaction(async (tx) => {
       const created = await tx.approvalChain.create({
@@ -262,8 +310,14 @@ export async function updateApprovalChain(req, res, next) {
         tier: s.tier,
         role: "APPROVER",
         escalationWindowHours: Number(s.escalationWindowHours),
+        assignedApproverId: s.assignedApproverId || null,
       }))
       .sort((a, b) => a.tier - b.tier);
+
+    const approverError = await validateStepApprovers(orderedSteps);
+    if (approverError) {
+      return res.status(400).json({ error: approverError });
+    }
 
     const chain = await prisma.$transaction(async (tx) => {
       const existing = await tx.approvalChain.findUnique({ where: { id } });

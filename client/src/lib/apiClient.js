@@ -111,8 +111,8 @@ export async function fetchVenue(venueId) {
   return request(`${API_BASE}/venues/${venueId}`);
 }
 
-export async function fetchVenueAvailability(venueId, startDate, endDate) {
-  const params = new URLSearchParams({ startDate, endDate });
+export async function fetchVenueAvailability(venueId, startAt, endAt) {
+  const params = new URLSearchParams({ startAt, endAt });
   return request(`${API_BASE}/venues/${venueId}/availability?${params}`);
 }
 

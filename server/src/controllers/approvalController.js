@@ -33,7 +33,12 @@ export async function pendingApprovals(req, res, next) {
     const mine = pending.filter((booking) => {
       const step = booking.approvalChainSnapshot?.[booking.currentStepIndex];
       if (!step) return false;
-      return user.role === "ADMIN" || step.tier === user.approverTier;
+      if (user.role === "ADMIN") return true;
+      // A step with a specific assignedApproverId is visible ONLY to that
+      // user; a step without one falls back to the old tier-wide match.
+      return step.assignedApproverId
+        ? step.assignedApproverId === user.id
+        : step.tier === user.approverTier;
     });
 
     return res.json(
@@ -98,8 +103,15 @@ export async function approveBooking(req, res, next) {
       return res.status(400).json({ error: "Invalid current step" });
     }
 
-    // Verify this approver is the right tier for the current step (or is ADMIN)
-    if (user.role !== "ADMIN" && user.approverTier !== currentStep.tier) {
+    // Verify this approver is the right person for the current step (or is
+    // ADMIN). A step with assignedApproverId requires that exact user; a
+    // step without one falls back to the old tier-wide match.
+    const isAuthorized =
+      user.role === "ADMIN" ||
+      (currentStep.assignedApproverId
+        ? currentStep.assignedApproverId === user.id
+        : user.approverTier === currentStep.tier);
+    if (!isAuthorized) {
       return res.status(403).json({ error: "You are not the approver for the current step" });
     }
 
@@ -191,9 +203,11 @@ export async function approveBooking(req, res, next) {
         });
       } else {
         const nextStep = chain[newStepIndex];
-        const nextApprover = await tx.user.findFirst({
-          where: { role: "APPROVER", approverTier: nextStep.tier },
-        });
+        const nextApprover = nextStep.assignedApproverId
+          ? await tx.user.findUnique({ where: { id: nextStep.assignedApproverId } })
+          : await tx.user.findFirst({
+              where: { role: "APPROVER", approverTier: nextStep.tier },
+            });
         // No approver seeded for this tier — the decision still stands;
         // there is simply no one to notify until one is assigned.
         if (nextApprover) {
