@@ -110,7 +110,7 @@ describe("Booking lifecycle", () => {
       where: { entityId: res.body.id },
     });
     expect(audit).not.toBeNull();
-    expect(audit.action).toBe("BOOKING_CREATED");
+    expect(audit.action).toBe("BOOKING_SUBMITTED");
   });
 
   test("POST /api/bookings — double-booking returns 409", async () => {
