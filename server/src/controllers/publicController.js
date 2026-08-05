@@ -22,8 +22,10 @@ export async function getPublicAvailability(req, res, next) {
     const venueWhere = venueId ? { id: venueId } : {};
     const venues = await prisma.venue.findMany({
       where: venueWhere,
-      select: { id: true },
+      select: { id: true, name: true },
     });
+
+    const venueMap = new Map(venues.map((v) => [v.id, v.name]));
 
     const bookings = await prisma.booking.findMany({
       where: {
@@ -47,6 +49,7 @@ export async function getPublicAvailability(req, res, next) {
       if (venueBookings.length === 0 && venueBlocks.length === 0) {
         slots.push({
           venueId: venue.id,
+          venueName: venue.name,
           timeslot: { startAt: start, endAt: end },
           busy: false,
         });
@@ -56,6 +59,7 @@ export async function getPublicAvailability(req, res, next) {
       for (const booking of venueBookings) {
         slots.push({
           venueId: booking.venueId,
+          venueName: venueMap.get(booking.venueId) || booking.venueId,
           timeslot: { startAt: booking.startAt, endAt: booking.endAt },
           busy: true,
         });
@@ -65,6 +69,7 @@ export async function getPublicAvailability(req, res, next) {
         if (timeslotsOverlap(start, end, block.startAt, block.endAt)) {
           slots.push({
             venueId: block.venueId,
+            venueName: venueMap.get(block.venueId) || block.venueId,
             timeslot: { startAt: block.startAt, endAt: block.endAt },
             busy: true,
           });

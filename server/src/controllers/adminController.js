@@ -1,5 +1,5 @@
 import prisma from "../lib/prisma.js";
-import { Role } from "shared";
+import { Role } from "../../../shared/index.js";
 
 /**
  * POST /api/admin/venues/:id/blocks — create venue blackout (US-A4).
@@ -144,6 +144,161 @@ export async function listUsers(req, res, next) {
     });
     return res.json(users);
   } catch (err) {
+    next(err);
+  }
+}
+
+const MAX_APPROVAL_TIERS = 6;
+
+// NOTE: specs/US-C1-configurable-approval-chains.md's original edge case says
+// a zero-step chain should be rejected. Product decision overrides that: an
+// empty chain now means "no approval required" — see createBooking in
+// bookingController.js, which auto-approves bookings against an empty chain.
+function validateApprovalSteps(steps) {
+  if (!Array.isArray(steps)) {
+    return "steps must be an array (use an empty array for 'no approval required').";
+  }
+  if (steps.length > MAX_APPROVAL_TIERS) {
+    return `A chain cannot have more than ${MAX_APPROVAL_TIERS} approval tiers.`;
+  }
+  for (const step of steps) {
+    if (!step || typeof step !== "object") {
+      return "Each step must be an object.";
+    }
+    if (!Number.isInteger(step.tier) || step.tier < 1) {
+      return "Each step needs a positive integer tier.";
+    }
+    if (step.role !== "APPROVER") {
+      return "Each step's role must be 'APPROVER'.";
+    }
+    if (!Number.isFinite(Number(step.escalationWindowHours)) || Number(step.escalationWindowHours) <= 0) {
+      return "Each step needs a positive escalationWindowHours.";
+    }
+  }
+  return null;
+}
+
+/**
+ * GET /api/admin/approval-chains — list chains for the venue add/edit form's
+ * approvalChainId picker (Admin only). Bare array, matching listUsers/listAuditLogs.
+ */
+export async function listApprovalChains(req, res, next) {
+  try {
+    const chains = await prisma.approvalChain.findMany({
+      orderBy: { venueType: "asc" },
+    });
+    return res.json(chains);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/admin/approval-chains — create a new approval chain (US-C1, Admin only).
+ * Body matches shared/contracts.js ApprovalChainConfigRequest: { venueType, steps }.
+ * Capped at MAX_APPROVAL_TIERS (6) steps.
+ */
+export async function createApprovalChain(req, res, next) {
+  try {
+    const { venueType, steps } = req.body;
+
+    if (!venueType || typeof venueType !== "string") {
+      return res.status(400).json({ error: "venueType is required." });
+    }
+    const stepsError = validateApprovalSteps(steps);
+    if (stepsError) {
+      return res.status(400).json({ error: stepsError });
+    }
+
+    const orderedSteps = [...steps]
+      .map((s) => ({
+        tier: s.tier,
+        role: "APPROVER",
+        escalationWindowHours: Number(s.escalationWindowHours),
+      }))
+      .sort((a, b) => a.tier - b.tier);
+
+    const chain = await prisma.$transaction(async (tx) => {
+      const created = await tx.approvalChain.create({
+        data: { venueType, steps: orderedSteps, version: 1 },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          entityType: "approval_chain",
+          entityId: created.id,
+          action: "APPROVAL_CHAIN_CREATED",
+          actorId: req.user.id,
+          metadata: { venueType, tierCount: orderedSteps.length },
+        },
+      });
+
+      return created;
+    });
+
+    return res.status(201).json({ chain });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/admin/approval-chains/:id — edit an existing chain's steps (US-C1, Admin only).
+ * Increments `version` in place; never touches `bookings` or `approvals` so
+ * in-flight bookings keep following their snapshot, per US-C2.
+ */
+export async function updateApprovalChain(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { steps } = req.body;
+
+    const stepsError = validateApprovalSteps(steps);
+    if (stepsError) {
+      return res.status(400).json({ error: stepsError });
+    }
+
+    const orderedSteps = [...steps]
+      .map((s) => ({
+        tier: s.tier,
+        role: "APPROVER",
+        escalationWindowHours: Number(s.escalationWindowHours),
+      }))
+      .sort((a, b) => a.tier - b.tier);
+
+    const chain = await prisma.$transaction(async (tx) => {
+      const existing = await tx.approvalChain.findUnique({ where: { id } });
+      if (!existing) {
+        const notFound = new Error("Approval chain not found");
+        notFound.status = 404;
+        throw notFound;
+      }
+
+      const updated = await tx.approvalChain.update({
+        where: { id },
+        data: { steps: orderedSteps, version: existing.version + 1 },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          entityType: "approval_chain",
+          entityId: id,
+          action: "APPROVAL_CHAIN_UPDATED",
+          actorId: req.user.id,
+          metadata: { tierCount: orderedSteps.length, version: updated.version },
+        },
+      });
+
+      return updated;
+    });
+
+    return res.json({ chain });
+  } catch (err) {
+    if (err.status === 404) {
+      return res.status(404).json({ error: err.message });
+    }
+    if (err.code === "P2025") {
+      return res.status(404).json({ error: "Approval chain not found" });
+    }
     next(err);
   }
 }

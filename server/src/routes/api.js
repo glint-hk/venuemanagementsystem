@@ -11,29 +11,6 @@ const router = Router();
 
 
 // ==========================================
-// BOOKING LIFECYCLE (US-A2)
-// ==========================================
-router.post("/bookings", authenticate, bookingController.createBooking);
-router.get("/bookings", authenticate, bookingController.getBookings);
-router.get("/bookings/:id", authenticate, bookingController.getBookingById);
-router.patch("/bookings/:id", authenticate, bookingController.updateBooking);
-router.patch(
-  "/bookings/:id/cancel",
-  authenticate,
-  bookingController.cancelBooking
-);
-
-// ==========================================
-// VENUE REGISTRY (US-A3 / US-A4)
-// ==========================================
-router.get("/venues", authenticate, venueController.getAllVenues);
-router.get("/venues/:id", authenticate, venueController.getVenueById);
-router.post("/venues", authenticate, requireAdmin, venueController.createVenue);
-router.patch("/venues/:id", authenticate, requireAdmin, venueController.patchVenue);
-router.delete("/venues/:id", authenticate, requireAdmin, venueController.deleteVenue);
-router.get("/venues/:id/availability", authenticate, venueController.getVenueAvailability)
-
-// ==========================================
 // ADMIN CONSOLE (US-A4 / US-A5)
 // ==========================================
 router.post(
@@ -54,20 +31,62 @@ router.get(
   requireAdmin,
   adminController.getUtilizationMetrics
 );
-router.post(
+router.get(
   "/admin/users",
   authenticate,
   requireAdmin,
   adminController.listUsers
 );
-router.post(
+router.get(
   "/admin/logs",
   authenticate,
   requireAdmin,
   adminController.listAuditLogs
 );
+router.get(
+  "/admin/approval-chains",
+  authenticate,
+  requireAdmin,
+  adminController.listApprovalChains
+);
+router.post(
+  "/admin/approval-chains",
+  authenticate,
+  requireAdmin,
+  adminController.createApprovalChain
+);
+router.patch(
+  "/admin/approval-chains/:id",
+  authenticate,
+  requireAdmin,
+  adminController.updateApprovalChain
+);
 
-router.get("/bookings/:bookingId/approve", authenticate, approveBooking);
+// Specific booking routes before parameterized :id route
 router.get("/bookings/approvals", authenticate, pendingApprovals);
+router.post("/bookings/:bookingId/approve", authenticate, approveBooking);
+
+// ==========================================
+// BOOKING LIFECYCLE (US-A2)
+// ==========================================
+router.post("/bookings", authenticate, bookingController.createBooking);
+router.get("/bookings", authenticate, bookingController.getBookings);
+router.get("/bookings/:id", authenticate, bookingController.getBookingById);
+router.patch("/bookings/:id", authenticate, bookingController.updateBooking);
+router.patch(
+  "/bookings/:id/cancel",
+  authenticate,
+  bookingController.cancelBooking
+);
+
+// ==========================================
+// VENUE REGISTRY (US-A3 / US-A4)
+// ==========================================
+router.get("/venues", authenticate, venueController.getAllVenues);
+router.get("/venues/:id", authenticate, venueController.getVenueById);
+router.post("/venues", authenticate, requireAdmin, venueController.createVenue);
+router.patch("/venues/:id", authenticate, requireAdmin, venueController.patchVenue);
+router.delete("/venues/:id", authenticate, requireAdmin, venueController.deleteVenue);
+router.get("/venues/:id/availability", authenticate, venueController.getVenueAvailability);
 
 export default router;

@@ -10,16 +10,24 @@ import { timeslotsOverlap } from "../lib/bookingHelpers.js";
  */
 export async function getAllVenues(req, res, next) {
   try {
-    const { type, minCapacity, attribute, startAt, endAt } = req.query;
+    const { type, minCapacity, attributes, startAt, endAt } = req.query;
 
     const where = {};
     if (type) where.type = type;
     if (minCapacity) where.capacity = { gte: Number(minCapacity) };
-    if (attribute) where.attributes = { has: attribute };
+    if (attributes) {
+      // Client sends a comma-separated list (e.g. "projector, audio");
+      // a venue must have ALL requested attributes to match.
+      const attrList = attributes
+        .split(",")
+        .map((a) => a.trim())
+        .filter(Boolean);
+      if (attrList.length > 0) where.attributes = { hasEvery: attrList };
+    }
 
     const venues = await prisma.venue.findMany({
       where,
-      include: { blocks: true, approvalChain: true },
+      include: { venueBlocks: true, approvalChain: true },
       orderBy: { name: "asc" },
     });
 
@@ -58,7 +66,7 @@ export async function getAllVenues(req, res, next) {
         capacity: venue.capacity,
         attributes: venue.attributes,
         approvalChainId: venue.approvalChainId,
-        blocks: venue.blocks.map((b) => ({
+        blocks: (venue.venueBlocks || []).map((b) => ({
           id: b.id,
           startAt: b.startAt,
           endAt: b.endAt,
@@ -68,7 +76,7 @@ export async function getAllVenues(req, res, next) {
       };
 
       if (availabilityWindow) {
-        const blocked = venue.blocks.some((block) =>
+        const blocked = (venue.venueBlocks || []).some((block) =>
           timeslotsOverlap(
             availabilityWindow.start,
             availabilityWindow.end,
@@ -104,7 +112,7 @@ export async function getVenueById(req, res, next) {
     const { id } = req.params;
     const venue = await prisma.venue.findUnique({
       where: { id },
-      include: { blocks: true, approvalChain: true },
+      include: { venueBlocks: true, approvalChain: true },
     });
 
     if (!venue) {
@@ -120,7 +128,7 @@ export async function getVenueById(req, res, next) {
         capacity: venue.capacity,
         attributes: venue.attributes,
         approvalChainId: venue.approvalChainId,
-        blocks: venue.blocks,
+        blocks: venue.venueBlocks || [],
       },
     });
   } catch (error) {

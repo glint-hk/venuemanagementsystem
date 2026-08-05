@@ -53,6 +53,9 @@ export async function createBooking(req, res, next) {
     }
 
     const chainSnapshot = (venue.approvalChain?.steps || [])
+    // An empty chain (0 approval tiers) means this venue type requires no
+    // sign-off — the booking goes straight to APPROVED instead of PENDING.
+    const autoApproved = chainSnapshot.length === 0;
 
     if (await isVenueBlocked(venueId, start, end)) {
       return res
@@ -68,7 +71,7 @@ export async function createBooking(req, res, next) {
           purpose,
           startAt: start,
           endAt: end,
-          status: BookingStatus.PENDING,
+          status: autoApproved ? BookingStatus.APPROVED : BookingStatus.PENDING,
           approvalChainSnapshot: chainSnapshot,
           currentStepIndex: 0,
         },
@@ -79,7 +82,7 @@ export async function createBooking(req, res, next) {
         data: {
           bookingId: newBooking.id,
           recipientId: bookerId,
-          templateKey: "BOOKING_SUBMITTED",
+          templateKey: autoApproved ? "BOOKING_APPROVED" : "BOOKING_SUBMITTED",
           payload: { bookingId: newBooking.id, venueName: venue.name },
         },
       });
@@ -117,9 +120,9 @@ export async function createBooking(req, res, next) {
         data: {
           entityType: 'booking',
           entityId: newBooking.id,
-          action: 'BOOKING_SUBMITTED',
+          action: autoApproved ? 'BOOKING_AUTO_APPROVED' : 'BOOKING_SUBMITTED',
           actorId: bookerId,
-          metadata: { initialStatus: 'PENDING', venueId },
+          metadata: { initialStatus: autoApproved ? 'APPROVED' : 'PENDING', venueId },
         },
       });
 

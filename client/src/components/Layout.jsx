@@ -1,7 +1,7 @@
-// Shared layout component — navigation sidebar for desktop and mobile drawer.
 import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
+import { Badge } from "./ui/Badge.jsx";
 
 const NAV_ITEMS = {
   BOOKER: [
@@ -16,7 +16,7 @@ const NAV_ITEMS = {
   ADMIN: [
     { to: "/dashboard", label: "My Bookings", icon: "📋" },
     { to: "/search", label: "Search Venues", icon: "🔍" },
-    { to: "/approvals", label: "Approvals", icon: "✅" },
+    { to: "/admin/venues", label: "Venue Management", icon: "✅" },
     { to: "/admin", label: "Admin", icon: "⚙️" },
     { to: "/admin/users", label: "Users", icon: "👥" },
   ],
@@ -61,7 +61,7 @@ export default function Layout({ children }) {
         />
       )}
 
-      {/* Sidebar Navigation (Desktop fixed, Mobile sliding drawer) */}
+      {/* Sidebar Navigation */}
       <aside
         className={`w-64 border-r border-white/10 backdrop-blur-xl bg-slate-900/95 md:bg-white/5 flex flex-col transition-all duration-300 fixed md:static inset-y-0 left-0 z-50 ${
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
@@ -74,7 +74,7 @@ export default function Layout({ children }) {
             </div>
             <div>
               <h2 className="text-white font-bold text-sm">Venue Booking</h2>
-              <p className="text-blue-300/50 text-xs">IIML Campus</p>
+              <p className="text-blue-300/50 text-xs">IIM Lucknow</p>
             </div>
           </div>
           <button
@@ -95,7 +95,7 @@ export default function Layout({ children }) {
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-200 ${
                   isActive
-                    ? "bg-blue-600/30 text-white border border-blue-500/30 font-medium"
+                    ? "bg-blue-600/30 text-white border border-blue-500/30 font-medium shadow-sm"
                     : "text-blue-200/60 hover:text-white hover:bg-white/5"
                 }`
               }
@@ -109,12 +109,17 @@ export default function Layout({ children }) {
         {/* User info */}
         <div className="p-4 border-t border-white/10">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white text-sm font-bold">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white text-sm font-bold shadow-md">
               {user?.name?.charAt(0) || "?"}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-white text-sm font-medium truncate">{user?.name}</p>
-              <p className="text-blue-300/50 text-xs truncate">{user?.role} {user?.approverTier ? `(Tier ${user.approverTier})` : ""}</p>
+              <div className="flex items-center gap-1 mt-0.5">
+                <Badge status={user?.role} className="text-[10px] py-0 px-1.5" />
+                {user?.approverTier && (
+                  <span className="text-[10px] text-blue-300/60 font-mono">T{user.approverTier}</span>
+                )}
+              </div>
             </div>
           </div>
           <button

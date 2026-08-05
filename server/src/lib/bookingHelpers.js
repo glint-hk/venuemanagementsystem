@@ -1,4 +1,6 @@
 import prisma from "./prisma.js";
+import pkg from "@prisma/client";
+const { Prisma } = pkg;
 
 /**
  * Maps a Prisma booking record to the BookingDTO wire shape (shared/contracts.js).

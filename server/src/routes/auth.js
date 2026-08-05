@@ -16,8 +16,8 @@ router.post("/login", async (req, res) => {
   try {
     const { idToken, email: rawEmail, name: rawName } = req.body;
 
-    let email = rawEmail;
-    let name = rawName;
+    let email = rawEmail ? String(rawEmail).trim().toLowerCase() : rawEmail;
+    let name = rawName ? String(rawName).trim() : rawName;
 
     // 1. Google OAuth Flow (if idToken is provided)
     if (idToken) {

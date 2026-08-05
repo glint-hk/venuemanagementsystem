@@ -4,7 +4,7 @@
 // Prodnova's ApprovalsPage.jsx) and extended here with the notification_outbox
 // write their draft was missing.
 import prisma from "../lib/prisma.js";
-import { BookingStatus } from "shared";
+import { BookingStatus } from "../../../shared/index.js";
 
 /**
  * GET /api/bookings/pending-approvals — bookings where the signed-in user is

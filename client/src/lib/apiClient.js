@@ -1,9 +1,9 @@
 // API client — centralised fetch wrapper for all server calls.
 // Uses relative URLs so the Vite proxy handles routing in dev.
 
-const API_BASE = "/api";
-const AUTH_BASE = "/auth";
-const PUBLIC_BASE = "/public";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const API_BASE = `${BASE_URL}/api`;
+const AUTH_BASE = `${BASE_URL}/auth`;
 
 const TOKEN_KEY = "authToken";
 const USER_KEY = "authUser";
@@ -16,14 +16,25 @@ function getHeaders() {
 }
  
 async function request(url, options = {}) {
-  const res = await fetch(url, {
-    ...options,
-    headers: { ...getHeaders(), ...options.headers },
-  });
+  const isAuthLogin = url.includes("/auth/login");
+  let res;
+  
+  try {
+    res = await fetch(url, {
+      ...options,
+      headers: { ...getHeaders(), ...options.headers },
+    });
+  } catch (netErr) {
+    console.error("Network fetch error:", netErr);
+    throw new Error("Unable to connect to backend server. Please verify the server is running.");
+  }
  
-  if (res.status === 401) {
+  // Intercept 401 for authenticated session expiry ONLY (not for login endpoint)
+  if (res.status === 401 && !isAuthLogin) {
     clearSession();
-    window.location.href = "/login";
+    if (window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
     throw new Error("Authentication required");
   }
  
@@ -33,7 +44,7 @@ async function request(url, options = {}) {
 async function handleResponse(res) {
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    const error = new Error(data?.error || `Request failed: ${res.status}`);
+    const error = new Error(data?.error || `Request failed with status ${res.status}`);
     error.status = res.status;
     error.data = data;
     throw error;
@@ -61,30 +72,23 @@ export function getStoredUser() {
 }
  
 // ── Auth ──
-// POST /auth/login (routes/auth.js) handles both paths through one endpoint:
-// - dev mode: body { email, name } — server trusts these directly and
-//   auto-registers a BOOKER on first login.
-// - Google SSO: body { idToken } — server verifies it against Google and
-//   derives email/name from the verified payload; any email/name also sent
-//   in the body is ignored in that case.
-// Either way the response is { message, token, user }, not { accessToken,
-// refreshToken } — there is no refresh token in this system.
 async function performLogin(body) {
   const data = await request(`${AUTH_BASE}/login`, {
     method: "POST",
     body: JSON.stringify(body),
   });
-  storeSession(data.token, data.user);
+  if (data?.token && data?.user) {
+    storeSession(data.token, data.user);
+  }
   return data;
 }
  
 export async function login(email, name) {
-  return performLogin({ email, name });
+  const sanitizedEmail = email ? String(email).trim().toLowerCase() : "";
+  const sanitizedName = name ? String(name).trim() : "";
+  return performLogin({ email: sanitizedEmail, name: sanitizedName });
 }
  
-// idToken is the Google Identity Services credential (a signed JWT) produced
-// by the button wired up in LoginPage.jsx. The server — not the client —
-// verifies it and enforces the institutional domain restriction.
 export async function loginWithGoogle(idToken) {
   return performLogin({ idToken });
 }
@@ -98,7 +102,7 @@ export async function fetchVenues(filters = {}) {
   const params = new URLSearchParams();
   if (filters.type) params.set("type", filters.type);
   if (filters.minCapacity) params.set("minCapacity", filters.minCapacity);
-  if (filters.attribute) params.set("attributes", filters.attribute);
+  if (filters.attributes) params.set("attributes", filters.attributes);
   const qs = params.toString();
   return request(`${API_BASE}/venues${qs ? `?${qs}` : ""}`);
 }
@@ -110,6 +114,26 @@ export async function fetchVenue(venueId) {
 export async function fetchVenueAvailability(venueId, startDate, endDate) {
   const params = new URLSearchParams({ startDate, endDate });
   return request(`${API_BASE}/venues/${venueId}/availability?${params}`);
+}
+
+export async function createVenue(data) {
+  return request(`${API_BASE}/venues`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateVenue(venueId, data) {
+  return request(`${API_BASE}/venues/${venueId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteVenue(venueId) {
+  return request(`${API_BASE}/venues/${venueId}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Bookings ──
@@ -136,7 +160,9 @@ export async function modifyBooking(bookingId, data) {
 }
 
 export async function cancelBooking(bookingId) {
-  return request(`${API_BASE}/bookings/${bookingId}/cancel`);
+  return request(`${API_BASE}/bookings/${bookingId}/cancel`, {
+    method: "PATCH",
+  });
 }
 
 // ── Approvals ──
@@ -157,7 +183,7 @@ export async function fetchUsers() {
 }
 
 export async function elevateRole(userId, role, approverTier) {
-  return request(`${AUTH_BASE}/roles/elevate/${userId}`, {
+  return request(`${AUTH_BASE}/roles/elevate`, {
     method: "PATCH",
     body: JSON.stringify({ userId, role, approverTier }),
   });
@@ -167,8 +193,36 @@ export async function fetchAuditLogs() {
   return request(`${API_BASE}/admin/logs`);
 }
 
+export async function fetchApprovalChains() {
+  return request(`${API_BASE}/admin/approval-chains`);
+}
+
+export async function createApprovalChain(data) {
+  return request(`${API_BASE}/admin/approval-chains`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateApprovalChain(chainId, data) {
+  return request(`${API_BASE}/admin/approval-chains/${chainId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
 // ── Public ──
-export async function fetchPublicAvailability(venueId) {
-  const res = await fetch(`${PUBLIC_BASE}/availability?${venueId}`);
-  return handleResponse(res);
+export async function fetchPublicAvailability(startAt, endAt, venueId) {
+  const params = new URLSearchParams();
+  if (startAt) params.set("startAt", startAt);
+  if (endAt) params.set("endAt", endAt);
+  if (venueId) params.set("venueId", venueId);
+  const qs = params.toString();
+  try {
+    const res = await fetch(`${API_BASE}/public/availability${qs ? `?${qs}` : ""}`);
+    return await handleResponse(res);
+  } catch (err) {
+    console.error("Public availability fetch error:", err);
+    throw new Error("Unable to connect to backend server. Please verify the server is running.");
+  }
 }
